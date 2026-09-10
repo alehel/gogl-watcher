@@ -650,7 +650,7 @@ func (d *DB) GetFile(ctx context.Context, id int64) (*File, error) {
 
 // ListFilesByGame returns all files (active or not) of a game.
 func (d *DB) ListFilesByGame(ctx context.Context, gameID int64) ([]File, error) {
-	return d.queryFiles(ctx, `WHERE game_id = ? ORDER BY product_id, kind, os, language, gog_id`, gameID)
+	return d.queryFiles(ctx, `WHERE game_id = ? ORDER BY product_id, CASE kind WHEN 'installer' THEN 0 ELSE 1 END, os, language, gog_id`, gameID)
 }
 
 // ListFilesByStatus returns files with the given status and active flag.
