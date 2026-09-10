@@ -1,0 +1,14 @@
+services:
+  gogl-watcher:
+    build: .
+    image: gogl-watcher:latest
+    container_name: gogl-watcher
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      LOG_LEVEL: info
+      # Set MOCK_GOG: "1" to explore the UI with a fake library and no GOG account.
+    volumes:
+      - ./data:/data          # database and settings
+      - ./library:/library    # downloaded installers, one folder per game
