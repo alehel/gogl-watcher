@@ -45,6 +45,10 @@ The first library sync starts immediately afterwards and downloads begin.
 
 ### Configuration
 
+Everything about *what* to download (platforms, languages, DLC/extras, concurrency, speed
+limit, check interval, pause) is configured in the web UI under **Settings** and stored in the
+database. The environment only controls *where* and *how* the process runs:
+
 | Variable | Default | Description |
 | --- | --- | --- |
 | `DATA_DIR` | `/data` | SQLite database (settings, tokens, file state, logs) |
@@ -54,13 +58,65 @@ The first library sync starts immediately afterwards and downloads begin.
 | `STARTUP_SYNC_DELAY_SECONDS` | `15` | Delay before the first scheduled check after boot |
 | `MOCK_GOG` | unset | Set to `1` to run against a fake library (demo mode, no GOG account needed) |
 
-Everything else (platforms, languages, DLC/extras, concurrency, speed limit, check interval,
-pause) is configured in the UI under **Settings** and stored in the database.
+## Running with Docker Compose
 
-With Docker Compose the host-side knobs live in `.env` (see `.env.example`): `PORT`,
-`DATA_DIR`, `LIBRARY_DIR`, `PUID`/`PGID`, `TZ`, `LOG_LEVEL` and `MOCK_GOG`. The container runs
-as `PUID:PGID` (default 1000:1000); set them to the owner of your library directory so the
-downloads are writable and readable from the host.
+The repository ships a `docker-compose.yml` that builds the image from source and runs it
+as a long-lived service. Host-side settings are read from a `.env` file next to it; copy
+`.env.example` to `.env` and edit what you need. Every value is optional.
+
+| `.env` variable | Default | Description |
+| --- | --- | --- |
+| `PORT` | `8080` | Host port the web UI is published on |
+| `DATA_DIR` | `./data` | Host directory mounted at `/data` (database, settings, GOG refresh token) |
+| `LIBRARY_DIR` | `./library` | Host directory mounted at `/library` (downloaded installers) |
+| `PUID` / `PGID` | `1000` / `1000` | User and group the container runs as |
+| `TZ` | `UTC` | Timezone used for log timestamps |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `MOCK_GOG` | `0` | `1` runs the demo library instead of talking to GOG |
+| `VERSION` | `dev` | Version string stamped into the binary and used as the image tag |
+
+### Start, stop, update
+
+```bash
+cp .env.example .env            # first time only
+mkdir -p data library           # or whatever DATA_DIR / LIBRARY_DIR point to
+docker compose up -d --build    # build the image and start the service
+docker compose logs -f          # follow the log
+docker compose ps               # shows the health state (healthy after ~10 s)
+docker compose down             # stop; data and library stay on disk
+```
+
+To update, pull the new source and rebuild: `git pull && docker compose up -d --build`.
+The container restarts automatically after a reboot (`restart: unless-stopped`) and reports
+its health through `GET /api/status`, so Docker marks it unhealthy if the process stops
+answering.
+
+### Volumes and permissions
+
+- **`/data`** holds the SQLite database: your settings, the record of every file and its
+  version, the logs shown in the UI, and the GOG refresh token. Back this directory up and
+  treat it as secret; anyone with the token can act as your GOG account until you disconnect
+  in Settings.
+- **`/library`** holds the installers, one folder per game. It is safe to read from, copy or
+  serve from the host while the service runs; the app writes new files as `<name>.part` and
+  renames them only after the size and checksum have been verified.
+
+The container runs as `PUID:PGID` (default `1000:1000`), so the mounted directories must be
+writable by that user. Set `PUID` and `PGID` to the owner of your library directory
+(`id -u` / `id -g` on the host) and the downloaded files will be owned by that account.
+
+### Trying it without a GOG account
+
+Set `MOCK_GOG=1` in `.env` and start the stack. The wizard accepts any text as the login
+code, the library is filled with sample games, and downloads stream fake data at a few
+megabytes per second so every screen can be explored. Point `DATA_DIR` and `LIBRARY_DIR` at
+throwaway directories, then set `MOCK_GOG=0` and recreate the container for real use.
+
+### Reverse proxies
+
+The UI and API live on one port with no built-in authentication. Keep it on a private
+network or put it behind a reverse proxy that handles login (for example Caddy, nginx or
+Traefik with forward auth) before exposing it beyond your LAN.
 
 ## How it works
 
@@ -97,7 +153,7 @@ make mock
 make build
 ```
 
-`make docker` builds the image; `docker compose up` does the same via the `build:` key.
+`make docker` builds the same image the compose file builds.
 
 ## Notes and limitations
 
