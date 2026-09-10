@@ -1,0 +1,23 @@
+# Go
+/gogl-watcher
+/bin/
+/dist/
+*.test
+*.out
+
+# Frontend build output (embedded at build time)
+/web/dist/*
+!/web/dist/.gitkeep
+/web/node_modules/
+
+# Local runtime data
+/data/
+/library/
+*.db
+*.db-wal
+*.db-shm
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
