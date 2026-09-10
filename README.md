@@ -27,6 +27,7 @@ limit bandwidth and concurrency.
 ## Quick start
 
 ```bash
+cp .env.example .env      # optional: port, host paths, UID/GID, timezone
 mkdir -p data library
 docker compose up -d --build
 ```
@@ -56,8 +57,10 @@ The first library sync starts immediately afterwards and downloads begin.
 Everything else (platforms, languages, DLC/extras, concurrency, speed limit, check interval,
 pause) is configured in the UI under **Settings** and stored in the database.
 
-The container runs as UID/GID 1000; make sure the mounted `data` and `library` directories are
-writable by that user (or run with `user: "<uid>:<gid>"` in the compose file).
+With Docker Compose the host-side knobs live in `.env` (see `.env.example`): `PORT`,
+`DATA_DIR`, `LIBRARY_DIR`, `PUID`/`PGID`, `TZ`, `LOG_LEVEL` and `MOCK_GOG`. The container runs
+as `PUID:PGID` (default 1000:1000); set them to the owner of your library directory so the
+downloads are writable and readable from the host.
 
 ## How it works
 
