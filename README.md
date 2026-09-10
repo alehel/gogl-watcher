@@ -1,26 +1,28 @@
 # gogl-watcher
 
-A self-hosted service that keeps a complete **offline copy of your GOG library**.
+A self-hosted service that keeps an **offline copy of your GOG library**.
 It runs as a single Docker container, downloads the offline installers of every game
-you own into one folder per game, and checks GOG on a schedule so new games and
-updated installers are fetched automatically. A built-in web UI shows what has been
+you own (or only of the games you pick) into one folder per game, and checks GOG on a
+schedule so new games and updated installers are fetched automatically. A built-in web UI shows what has been
 downloaded, what is pending, what failed, the download queue and the logs, and lets you
 limit bandwidth and concurrency.
 
 ## Features
 
-- **Full offline library** – installers (Windows / macOS / Linux, your choice), owned DLC and
-  optionally extras (soundtracks, manuals, artbooks…) organised as
+- **Full or selected library** – download every game you own, or only the games you tick in
+  the library (nothing is selected until you do). Installers (Windows / macOS / Linux, your
+  choice), owned DLC and optionally extras (soundtracks, manuals, artbooks…) are organised as
   `library/<Game>/<os>/…`, `library/<Game>/dlc/<DLC>/<os>/…` and `library/<Game>/extras/…`.
 - **Automatic updates** – a scheduler re-checks GOG every *N* hours; new versions replace the
   old installer once the new download has completed and verified.
 - **Robust downloads** – configurable number of parallel downloads, global speed limit,
   resumable `.part` files, MD5 verification against GOG's checksums, automatic retries with
   backoff, free-space check.
-- **Web UI** – first-run wizard (authorize → platforms → content), dashboard, library grid with
-  per-game file lists, downloads page with pause/resume, searchable logs, settings.
-- **Safe settings changes** – removing a platform (or DLC/extras) asks whether to keep or delete
-  the files already on disk.
+- **Web UI** – first-run wizard (authorize → games → platforms → content), dashboard, library
+  grid with per-game file lists and selection, downloads page with pause/resume, searchable logs,
+  settings.
+- **Safe settings changes** – removing a platform (or DLC/extras), deselecting a game or switching
+  to "selected games only" asks whether to keep or delete the files already on disk.
 - **Single static binary** – Go backend with the React UI embedded, SQLite for state, no cron
   daemon or external services.
 
@@ -38,16 +40,21 @@ Open <http://localhost:8080>. On first start the setup wizard walks you through:
    client uses), log in, then copy the URL of the blank page you land on (or just the
    `code=` value) and paste it into the app. Your password never touches the app; only the
    resulting refresh token is stored in `/data`.
-2. **Platforms** – pick which installer platforms you want (at least one).
-3. **Content** – choose whether to include DLC and extras, and which installer languages.
+2. **Games** – download every game you own, or only games you select. With "only selected",
+   no game is selected to begin with: tick games in the library afterwards and their installers
+   are fetched right away. Large libraries usually want this.
+3. **Platforms** – pick which installer platforms you want (at least one).
+4. **Content** – choose whether to include DLC and extras, and which installer languages.
 
-The first library sync starts immediately afterwards and downloads begin.
+The first library sync starts immediately afterwards and downloads begin (for selected games
+only, in that mode).
 
 ### Configuration
 
-Everything about *what* to download (platforms, languages, DLC/extras, concurrency, speed
-limit, check interval, pause) is configured in the web UI under **Settings** and stored in the
-database. The environment only controls *where* and *how* the process runs:
+Everything about *what* to download (download mode, platforms, languages, DLC/extras,
+concurrency, speed limit, check interval, pause) is configured in the web UI under **Settings**
+and stored in the database; installations set up before the download mode existed keep
+downloading everything. The environment only controls *where* and *how* the process runs:
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -136,7 +143,8 @@ Traefik with forward auth) before exposing it beyond your LAN.
 ## How it works
 
 - **Sync** (`internal/library`): fetches the owned product ids and the account game list, then
-  each game's download manifest from `api.gog.com`. For every game it plans the wanted files
+  each game's download manifest from `api.gog.com` (in "selected games only" mode, only for
+  selected games; the rest are just listed). For every game it plans the wanted files
   from your settings (platforms, languages with optional fallback, DLC, extras) and reconciles
   them with the database: new files become *pending*, files whose version or size changed
   become *pending* again (the old file is deleted after the new one succeeds), files that are no

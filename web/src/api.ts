@@ -1,7 +1,9 @@
 // Typed client for the gogl-watcher HTTP API (see docs/api.md).
 // All requests are relative to the current origin; the backend serves the SPA.
 
-export type SetupStep = "auth" | "platforms" | "content" | "done";
+export type SetupStep = "auth" | "games" | "platforms" | "content" | "done";
+/** Which games are downloaded: everything owned, or only games selected in the library. Empty until setup asked. */
+export type DownloadMode = "" | "all" | "selected";
 export type SyncPhase = "" | "listing" | "details" | "reconciling";
 export type Platform = "windows" | "mac" | "linux";
 export type GameStatus =
@@ -11,7 +13,8 @@ export type GameStatus =
   | "partial"
   | "error"
   | "unavailable"
-  | "unsynced";
+  | "unsynced"
+  | "unselected";
 export type FileStatus = "pending" | "downloading" | "done" | "error" | "inactive";
 export type FileKind = "installer" | "extra";
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -49,6 +52,9 @@ export interface LibraryTotals {
   partial: number;
   error: number;
   unavailable: number;
+  unsynced: number;
+  unselected: number;
+  download_mode: DownloadMode;
   bytes_total: number;
   bytes_done: number;
 }
@@ -80,6 +86,7 @@ export interface AuthInfo {
 }
 
 export interface Settings {
+  download_mode: DownloadMode;
   platforms: Platform[];
   languages: string[];
   language_fallback: boolean;
@@ -124,6 +131,8 @@ export interface GameSummary {
   folder: string;
   works_on: WorksOn;
   owned: boolean;
+  /** Chosen for download; only meaningful when download_mode is "selected". */
+  selected: boolean;
   status: GameStatus;
   files_total: number;
   files_done: number;
@@ -319,6 +328,13 @@ export const retryGame = (id: number | string) =>
   request<{ ok: true }>("POST", `/api/games/${id}/retry`);
 export const retryFile = (id: number | string) =>
   request<{ ok: true }>("POST", `/api/files/${id}/retry`);
+/** Selects or deselects games for download. Deselecting downloaded games needs `onRemoved` (409 otherwise). */
+export const setGameSelection = (ids: number[], selected: boolean, onRemoved: OnRemoved = null) =>
+  request<{ ok: true; selected: boolean; ids: number[] }>("PUT", "/api/games/selection", {
+    ids,
+    selected,
+    on_removed: onRemoved,
+  });
 
 // ---- Sync and downloads ----
 export const startSync = () => request<{ ok: true }>("POST", "/api/sync");

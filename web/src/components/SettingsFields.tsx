@@ -1,9 +1,55 @@
-import type { LanguageOption, Platform, RemovedSummary } from "../api";
+import type { DownloadMode, LanguageOption, Platform, RemovedSummary } from "../api";
 import { formatBytes, PLATFORM_LABELS, plural } from "../format";
 import { Checkbox } from "./Common";
 import { Modal } from "./Modal";
 
 export const ALL_PLATFORMS: Platform[] = ["windows", "mac", "linux"];
+
+export const DOWNLOAD_MODE_LABELS: Record<Exclude<DownloadMode, "">, string> = {
+  all: "Every game I own",
+  selected: "Only games I select",
+};
+
+/** Radio choice between downloading the whole library and only selected games. */
+export function DownloadModePicker({
+  value,
+  onChange,
+  disabled,
+  name = "download_mode",
+}: {
+  value: DownloadMode;
+  onChange: (v: Exclude<DownloadMode, "">) => void;
+  disabled?: boolean;
+  name?: string;
+}) {
+  const options: Array<{ value: Exclude<DownloadMode, "">; desc: string }> = [
+    { value: "all", desc: "Everything in your library is downloaded and kept up to date. Large libraries need a lot of disk space." },
+    {
+      value: "selected",
+      desc: "Nothing is downloaded until you tick games in the library. New games you buy are listed but not downloaded.",
+    },
+  ];
+  return (
+    <div className="check-list" role="radiogroup" aria-label="Which games to download">
+      {options.map((o) => (
+        <label key={o.value} className="check">
+          <input
+            type="radio"
+            name={name}
+            value={o.value}
+            checked={value === o.value}
+            disabled={disabled}
+            onChange={() => onChange(o.value)}
+          />
+          <span>
+            {DOWNLOAD_MODE_LABELS[o.value]}
+            <span className="desc">{o.desc}</span>
+          </span>
+        </label>
+      ))}
+    </div>
+  );
+}
 
 export function PlatformPicker({
   value,
@@ -105,6 +151,8 @@ export function describeReason(reason: string, languages: LanguageOption[]): str
       return "DLC is no longer included";
     case "extras":
       return "Extras are no longer included";
+    case "unselected":
+      return "The game is not selected for download";
     default:
       return reason;
   }

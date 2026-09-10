@@ -6,6 +6,7 @@ import {
   getLanguages,
   getSettings,
   putSettings,
+  type DownloadMode,
   type LanguageOption,
   type Platform,
   type Settings,
@@ -17,6 +18,8 @@ import { Loading, Spinner } from "../components/Common";
 import { Brand } from "../components/Layout";
 import {
   ALL_PLATFORMS,
+  DOWNLOAD_MODE_LABELS,
+  DownloadModePicker,
   LanguageFallbackSwitch,
   LanguagePicker,
   PlatformPicker,
@@ -28,6 +31,7 @@ import { PLATFORM_LABELS } from "../format";
 
 const STEPS = [
   { key: "auth", label: "Authorize" },
+  { key: "games", label: "Games" },
   { key: "platforms", label: "Platforms" },
   { key: "content", label: "Content" },
   { key: "done", label: "Finish" },
@@ -104,7 +108,7 @@ export function SetupPage() {
       )}
       {active === 1 &&
         withSettings((s) => (
-          <PlatformsStep
+          <GamesStep
             settings={s}
             onSaved={() => {
               settingsState.refresh();
@@ -116,10 +120,8 @@ export function SetupPage() {
         ))}
       {active === 2 &&
         withSettings((s) => (
-          <ContentStep
+          <PlatformsStep
             settings={s}
-            languages={languages}
-            languagesError={languagesState.error}
             onSaved={() => {
               settingsState.refresh();
               refresh();
@@ -130,11 +132,25 @@ export function SetupPage() {
         ))}
       {active === 3 &&
         withSettings((s) => (
+          <ContentStep
+            settings={s}
+            languages={languages}
+            languagesError={languagesState.error}
+            onSaved={() => {
+              settingsState.refresh();
+              refresh();
+              setActive(4);
+            }}
+            onBack={() => setActive(2)}
+          />
+        ))}
+      {active === 4 &&
+        withSettings((s) => (
           <FinishStep
             settings={s}
             languages={languages}
             user={status?.user ?? null}
-            onBack={() => setActive(2)}
+            onBack={() => setActive(3)}
             onDone={() => {
               refresh();
               navigate("/", { replace: true });
@@ -164,6 +180,59 @@ function AuthStep({ user, onConnected }: { user: User | null; onConnected: (u: U
       <h1 className="page-title">Connect your GOG account</h1>
       {user && <StatusDot tone="ok">Connected as {user.username}</StatusDot>}
       <AuthorizeForm onConnected={onConnected} currentUser={user} />
+    </div>
+  );
+}
+
+function GamesStep({
+  settings,
+  onSaved,
+  onBack,
+}: {
+  settings: Settings;
+  onSaved: () => void;
+  onBack: () => void;
+}) {
+  const [mode, setMode] = useState<DownloadMode>(settings.download_mode);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    if (mode === "") return;
+    setBusy(true);
+    setError(null);
+    try {
+      await putSettings({ ...settings, download_mode: mode }, null);
+      onSaved();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="wizard-step">
+      <h1 className="page-title">Which games should be downloaded?</h1>
+      <p className="lead">
+        gogl-watcher can keep an offline copy of your whole GOG library, or only of the games you pick. You can switch
+        later under Settings.
+      </p>
+      <DownloadModePicker value={mode} onChange={setMode} disabled={busy} />
+      {mode === "selected" && (
+        <p className="muted small">
+          After setup, open the library and tick the games you want. No game is selected to begin with.
+        </p>
+      )}
+      {error && <div className="strip danger">{error}</div>}
+      <div className="wizard-actions">
+        <button className="btn text" onClick={onBack} disabled={busy}>
+          Back
+        </button>
+        <button className="btn primary" onClick={save} disabled={busy || mode === ""}>
+          {busy && <Spinner />} Continue
+        </button>
+      </div>
     </div>
   );
 }
@@ -198,7 +267,7 @@ function PlatformsStep({
     <div className="wizard-step">
       <h1 className="page-title">Which platforms do you want installers for?</h1>
       <p className="lead">
-        For every game in your library the offline installers for these platforms will be downloaded, when GOG offers
+        For every game that is downloaded, the offline installers for these platforms will be fetched when GOG offers
         them. Pick at least one.
       </p>
       <PlatformPicker value={platforms} onChange={setPlatforms} disabled={busy} />
@@ -385,6 +454,14 @@ function FinishStep({
       <dl className="kv summary-list">
         <dt>GOG account</dt>
         <dd>{user ? user.username : <span className="err-text">not connected</span>}</dd>
+        <dt>Games</dt>
+        <dd>
+          {settings.download_mode ? (
+            DOWNLOAD_MODE_LABELS[settings.download_mode]
+          ) : (
+            <span className="err-text">not chosen</span>
+          )}
+        </dd>
         <dt>Platforms</dt>
         <dd>
           {settings.platforms.length ? (
@@ -408,7 +485,9 @@ function FinishStep({
         <dd>every {settings.check_interval_hours} h</dd>
       </dl>
       <p className="muted small">
-        Starting will run the first library sync right away and begin downloading installers into the library folder.
+        {settings.download_mode === "selected"
+          ? "Starting will fetch your game list right away. Nothing is downloaded until you select games in the library."
+          : "Starting will run the first library sync right away and begin downloading installers into the library folder."}
       </p>
       {error && <div className="strip danger">{error}</div>}
       <div className="wizard-actions">

@@ -644,7 +644,13 @@ input[type="radio"] {
 }
 .thumb img { width: 100%; height: 100%; object-fit: cover; }
 .table td.thumb-cell { width: 28px; padding-right: 12px; }
+.table td.select-cell, .table th.select-cell { width: 14px; padding-right: 8px; }
+.table tr.dim .thumb { opacity: 0.6; }
 .lib-grid { display: grid; gap: 20px 16px; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+.grid-cell { min-width: 0; }
+.grid-cell.dim .cover { opacity: 0.6; }
+.grid-select { align-items: center; min-height: 0; margin-top: 2px; }
+.grid-select input { margin-top: 0; }
 .grid-item { display: block; color: var(--text); min-width: 0; }
 .grid-item:hover { text-decoration: none; }
 .grid-item:hover .title { text-decoration: underline; }

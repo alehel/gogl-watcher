@@ -32,7 +32,13 @@ export function DashboardPage() {
   const diskFrac = ratio(status.disk.free_bytes, status.disk.total_bytes);
   const diskLow = status.disk.total_bytes > 0 && diskFrac < 0.05;
 
-  const parts: string[] = [`${l.complete.toLocaleString()} of ${plural(l.games, "game")} complete`];
+  const selectedOnly = l.download_mode === "selected";
+  const wanted = selectedOnly ? l.games - l.unselected : l.games;
+  const parts: string[] = [
+    selectedOnly
+      ? `${l.complete.toLocaleString()} of ${plural(wanted, "selected game")} complete`
+      : `${l.complete.toLocaleString()} of ${plural(l.games, "game")} complete`,
+  ];
   if (d.active > 0) parts.push(`${d.active} downloading at ${formatSpeed(d.speed_bps)}`);
   else if (d.paused) parts.push("downloads paused");
   if (d.queued > 0) parts.push(`${d.queued.toLocaleString()} queued`);
@@ -51,6 +57,7 @@ export function DashboardPage() {
       <div>
         <div className="status-strip">
           <Item label="Games" value={l.games} />
+          {selectedOnly && <Item label="Selected" value={wanted} />}
           <Item label="Complete" value={l.complete} />
           <Item label="Pending" value={l.pending + l.partial} />
           <Item label="Downloading" value={l.downloading} />
@@ -83,6 +90,13 @@ export function DashboardPage() {
               <EmptyState>
                 {d.paused ? "Downloads are paused." : "Nothing downloading."}
                 {d.queued > 0 ? ` ${plural(d.queued, "file")} queued.` : ""}
+                {selectedOnly && wanted === 0 && d.queued === 0 ? (
+                  <>
+                    {" "}
+                    No games are selected yet. <Link to="/library">Pick games in the library</Link> to start
+                    downloading.
+                  </>
+                ) : null}
               </EmptyState>
             )
           ) : downloads.error ? (

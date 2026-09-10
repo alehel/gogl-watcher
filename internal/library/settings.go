@@ -8,6 +8,10 @@ import (
 	"github.com/alehel/gogl-watcher/internal/db"
 )
 
+// ReasonUnselected is the removal reason for files of a game that is not selected
+// while only selected games are downloaded.
+const ReasonUnselected = "unselected"
+
 // RemovalPreview describes tracked files a settings change would drop.
 type RemovalPreview struct {
 	NeedsConfirmation bool `json:"needs_confirmation"`
@@ -21,7 +25,10 @@ type RemovalPreview struct {
 }
 
 // unwantedReason returns why f would no longer be wanted under s, or "".
-func unwantedReason(f db.File, isDLC bool, s db.Settings) string {
+func unwantedReason(f db.File, game db.Game, isDLC bool, s db.Settings) string {
+	if !s.WantsGame(game) {
+		return ReasonUnselected
+	}
 	if isDLC && !s.IncludeDLC {
 		return "dlc"
 	}
@@ -50,11 +57,21 @@ func (s *Syncer) findUnwanted(ctx context.Context, ns db.Settings) ([]unwanted, 
 	if err != nil {
 		return nil, err
 	}
+	games := map[int64]db.Game{}
+	if ns.SelectedOnly() {
+		all, err := s.db.ListGames(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, g := range all {
+			games[g.ID] = g
+		}
+	}
 	dlc := map[int64]bool{}
-	games := map[int64]bool{}
+	seen := map[int64]bool{}
 	for _, f := range files {
-		if !games[f.GameID] {
-			games[f.GameID] = true
+		if !seen[f.GameID] {
+			seen[f.GameID] = true
 			prods, err := s.db.ListProducts(ctx, f.GameID)
 			if err != nil {
 				return nil, err
@@ -66,19 +83,14 @@ func (s *Syncer) findUnwanted(ctx context.Context, ns db.Settings) ([]unwanted, 
 	}
 	var out []unwanted
 	for _, f := range files {
-		if r := unwantedReason(f, dlc[f.ProductID], ns); r != "" {
+		if r := unwantedReason(f, games[f.GameID], dlc[f.ProductID], ns); r != "" {
 			out = append(out, unwanted{f, r})
 		}
 	}
 	return out, nil
 }
 
-// PreviewSettings reports what applying ns would drop.
-func (s *Syncer) PreviewSettings(ctx context.Context, ns db.Settings) (*RemovalPreview, error) {
-	list, err := s.findUnwanted(ctx, ns)
-	if err != nil {
-		return nil, err
-	}
+func previewOf(list []unwanted) *RemovalPreview {
 	p := &RemovalPreview{Reasons: []string{}}
 	reasons := map[string]bool{}
 	for _, u := range list {
@@ -95,7 +107,16 @@ func (s *Syncer) PreviewSettings(ctx context.Context, ns db.Settings) (*RemovalP
 	}
 	sort.Strings(p.Reasons)
 	p.NeedsConfirmation = p.Removed.DownloadedFiles > 0
-	return p, nil
+	return p
+}
+
+// PreviewSettings reports what applying ns would drop.
+func (s *Syncer) PreviewSettings(ctx context.Context, ns db.Settings) (*RemovalPreview, error) {
+	list, err := s.findUnwanted(ctx, ns)
+	if err != nil {
+		return nil, err
+	}
+	return previewOf(list), nil
 }
 
 // ErrConfirmationRequired is returned by ApplySettings when downloaded files would be dropped.
@@ -105,19 +126,18 @@ type ErrConfirmationRequired struct {
 
 func (e *ErrConfirmationRequired) Error() string { return "confirmation_required" }
 
-// ApplySettings stores ns. onRemoved must be "keep" or "delete" when downloaded
-// files stop being wanted; files never downloaded are simply forgotten.
-func (s *Syncer) ApplySettings(ctx context.Context, ns db.Settings, onRemoved string) error {
-	list, err := s.findUnwanted(ctx, ns)
-	if err != nil {
-		return err
-	}
-	preview, _ := s.PreviewSettings(ctx, ns)
+// dropFiles forgets the files in list. onRemoved must be "keep" or "delete" when
+// downloaded files are among them; files never downloaded are simply forgotten.
+func (s *Syncer) dropFiles(ctx context.Context, list []unwanted, onRemoved, why string) error {
+	preview := previewOf(list)
 	if preview.NeedsConfirmation && onRemoved != "keep" && onRemoved != "delete" {
 		return &ErrConfirmationRequired{Preview: preview}
 	}
 	for _, u := range list {
 		f := u.file
+		if s.OnDrop != nil {
+			s.OnDrop(f.ID)
+		}
 		switch {
 		case f.Status != db.StatusDone:
 			if err := s.db.DeleteFile(ctx, f.ID); err != nil {
@@ -131,7 +151,7 @@ func (s *Syncer) ApplySettings(ctx context.Context, ns db.Settings, onRemoved st
 			if err := s.db.DeleteFile(ctx, f.ID); err != nil {
 				return err
 			}
-			s.log.Info("deleted file after settings change", "path", f.LocalPath, "reason", u.reason)
+			s.log.Info("deleted file after "+why, "path", f.LocalPath, "reason", u.reason)
 		default:
 			if err := s.db.SetFileInactive(ctx, f.ID); err != nil {
 				return err
@@ -139,7 +159,53 @@ func (s *Syncer) ApplySettings(ctx context.Context, ns db.Settings, onRemoved st
 		}
 	}
 	if len(list) > 0 {
-		s.log.Info("settings change dropped tracked files", "files", len(list), "action", onRemoved)
+		s.log.Info(why+" dropped tracked files", "files", len(list), "action", onRemoved)
+	}
+	return nil
+}
+
+// ApplySettings stores ns. onRemoved must be "keep" or "delete" when downloaded
+// files stop being wanted; files never downloaded are simply forgotten.
+func (s *Syncer) ApplySettings(ctx context.Context, ns db.Settings, onRemoved string) error {
+	list, err := s.findUnwanted(ctx, ns)
+	if err != nil {
+		return err
+	}
+	if err := s.dropFiles(ctx, list, onRemoved, "settings change"); err != nil {
+		return err
 	}
 	return s.db.SaveSettings(ctx, ns)
+}
+
+// SetSelection marks games as selected for download or not. Deselecting a game
+// drops its tracked files like a settings change does: onRemoved must be "keep" or
+// "delete" when downloaded files are affected. Selecting never touches files; the
+// caller syncs the games afterwards so their files get planned.
+func (s *Syncer) SetSelection(ctx context.Context, ids []int64, selected bool, onRemoved string) error {
+	if !selected {
+		settings, err := s.db.GetSettings(ctx)
+		if err != nil {
+			return err
+		}
+		var list []unwanted
+		if settings.SelectedOnly() {
+			for _, id := range ids {
+				files, err := s.db.ListActiveFilesByGame(ctx, id)
+				if err != nil {
+					return err
+				}
+				for _, f := range files {
+					list = append(list, unwanted{f, ReasonUnselected})
+				}
+			}
+		}
+		if err := s.dropFiles(ctx, list, onRemoved, "deselecting games"); err != nil {
+			return err
+		}
+	}
+	if err := s.db.SetGamesSelected(ctx, ids, selected); err != nil {
+		return err
+	}
+	s.log.Info("game selection changed", "games", len(ids), "selected", selected)
+	return nil
 }

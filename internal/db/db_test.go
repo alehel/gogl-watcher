@@ -166,3 +166,57 @@ func TestAuthRoundTrip(t *testing.T) {
 		t.Error("auth not cleared")
 	}
 }
+
+func TestGameSelection(t *testing.T) {
+	d := openTest(t)
+	ctx := context.Background()
+	for _, id := range []int64{1, 2, 3} {
+		if err := d.UpsertGame(ctx, Game{ID: id, Title: "G", Folder: "G"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g, _ := d.GetGame(ctx, 1)
+	if g.Selected {
+		t.Error("games start unselected")
+	}
+	if err := d.SetGamesSelected(ctx, []int64{1, 3}, true); err != nil {
+		t.Fatal(err)
+	}
+	games, _ := d.ListGames(ctx)
+	want := map[int64]bool{1: true, 2: false, 3: true}
+	for _, g := range games {
+		if g.Selected != want[g.ID] {
+			t.Errorf("game %d selected = %v", g.ID, g.Selected)
+		}
+	}
+	// Re-listing from GOG must not reset the flag.
+	if err := d.UpsertGame(ctx, Game{ID: 1, Title: "G2", Folder: "G"}); err != nil {
+		t.Fatal(err)
+	}
+	g, _ = d.GetGame(ctx, 1)
+	if !g.Selected || g.Title != "G2" {
+		t.Errorf("upsert should keep selection: %+v", g)
+	}
+	if err := d.SetGamesSelected(ctx, []int64{1}, false); err != nil {
+		t.Fatal(err)
+	}
+	g, _ = d.GetGame(ctx, 1)
+	if g.Selected {
+		t.Error("deselect failed")
+	}
+	all := Settings{}
+	sel := Settings{DownloadMode: DownloadSelected}
+	if !all.WantsGame(*g) || sel.WantsGame(*g) {
+		t.Error("WantsGame should depend on the mode")
+	}
+	norm := DefaultSettings()
+	norm.DownloadMode = "Selected "
+	if err := norm.Normalize(); err != nil || norm.DownloadMode != DownloadSelected {
+		t.Errorf("normalize mode: %q %v", norm.DownloadMode, err)
+	}
+	bad := DefaultSettings()
+	bad.DownloadMode = "some"
+	if err := bad.Normalize(); err == nil {
+		t.Error("invalid mode should be rejected")
+	}
+}
