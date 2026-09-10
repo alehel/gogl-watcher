@@ -10,28 +10,26 @@ export function AuthPage() {
   const navigate = useNavigate();
 
   return (
-    <div className="stack" style={{ maxWidth: 720 }}>
+    <div className="stack" style={{ maxWidth: 600 }}>
       <div>
-        <Link to="/" className="btn ghost sm">
+        <Link to="/" className="back">
           <IconBack /> Dashboard
         </Link>
       </div>
-      <div className="page-head">
-        <h1>Re-authorize with GOG</h1>
+      <div>
+        <h1 className="page-title">Re-authorize with GOG</h1>
         {status?.auth_error && (
-          <div className="sub err-text">The stored GOG session stopped working: {status.auth_error}</div>
+          <p className="summary err-text">The stored GOG session stopped working: {status.auth_error}</p>
         )}
       </div>
-      <div className="card">
-        <AuthorizeForm
-          currentUser={status?.authenticated ? status.user : null}
-          onConnected={(u) => {
-            toast.success(`Connected as ${u.username}`);
-            refresh();
-            navigate("/");
-          }}
-        />
-      </div>
+      <AuthorizeForm
+        currentUser={status?.authenticated ? status.user : null}
+        onConnected={(u) => {
+          toast.success(`Connected as ${u.username}`);
+          refresh();
+          navigate("/");
+        }}
+      />
     </div>
   );
 }

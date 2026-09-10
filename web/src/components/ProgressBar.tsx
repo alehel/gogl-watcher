@@ -1,22 +1,22 @@
 import { formatPercent } from "../format";
-import type { Tone } from "./StatusBadge";
+import type { Tone } from "./StatusDot";
 
 interface Props {
   /** 0..1 */
   value: number;
   tone?: Tone;
-  size?: "sm" | "md" | "lg";
-  striped?: boolean;
+  /** 2px full-width line instead of the 3px bar. */
+  line?: boolean;
+  /** Renders the 96px bar with the percentage next to it. */
   showPercent?: boolean;
   label?: string;
 }
 
-export function ProgressBar({ value, tone = "accent", size = "md", striped, showPercent, label }: Props) {
+export function ProgressBar({ value, tone, line, showPercent, label }: Props) {
   const v = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
-  const toneClass = tone === "accent" ? "" : tone;
   const bar = (
     <div
-      className={`progress ${toneClass} ${size === "md" ? "" : size} ${striped ? "striped" : ""}`.trim()}
+      className={`bar${line ? " line" : ""}${tone ? ` ${tone}` : ""}`}
       role="progressbar"
       aria-valuemin={0}
       aria-valuemax={100}
@@ -28,7 +28,7 @@ export function ProgressBar({ value, tone = "accent", size = "md", striped, show
   );
   if (!showPercent) return bar;
   return (
-    <div className="progress-row">
+    <div className="bar-row">
       {bar}
       <span className="pct">{formatPercent(v)}</span>
     </div>

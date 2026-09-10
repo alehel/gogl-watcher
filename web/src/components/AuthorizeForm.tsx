@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { errorMessage, getAuthUrl, postAuthCode, type User } from "../api";
 import { useAsync } from "../hooks";
-import { IconAlert, IconCheck, IconExternal, IconRefresh } from "./Icons";
+import { IconExternal } from "./Icons";
 import { Spinner } from "./Common";
+import { StatusDot } from "./StatusDot";
 
 interface Props {
   onConnected: (user: User) => void;
@@ -46,35 +47,37 @@ export function AuthorizeForm({ onConnected, currentUser }: Props) {
         gog.com and paste back the one-time code GOG hands out.
       </p>
       {currentUser && !connected && (
-        <div className="notice info">
-          Currently connected as <strong>{currentUser.username}</strong>. Authorizing again replaces the stored token.
+        <div className="strip info">
+          <span>
+            Currently connected as <strong>{currentUser.username}</strong>. Authorizing again replaces the stored
+            token.
+          </span>
         </div>
       )}
-      <ol>
+      <ol className="muted">
         <li>Open the GOG login page (it opens in a new tab) and sign in.</li>
         <li>
-          You will land on a blank page whose address starts with{" "}
-          <code>https://embed.gog.com/on_login_success</code>.
+          You will land on a blank page whose address starts with <code>https://embed.gog.com/on_login_success</code>.
         </li>
         <li>
-          Copy the <strong>full URL</strong> of that page, or just the <code>code=</code> value, and paste it below.
+          Copy the full URL of that page, or just the <code>code=</code> value, and paste it below.
         </li>
       </ol>
 
       <div className="btn-row">
         {urlState.data ? (
-          <a className="btn primary" href={urlState.data.url} target="_blank" rel="noopener noreferrer">
-            <IconExternal /> Open GOG login
+          <a className="btn" href={urlState.data.url} target="_blank" rel="noopener noreferrer">
+            Open GOG login <IconExternal />
           </a>
         ) : urlState.error ? (
-          <>
-            <span className="err-text">Could not get the login URL: {errorMessage(urlState.error)}</span>
-            <button className="btn sm" onClick={urlState.refresh}>
-              <IconRefresh /> Retry
+          <span className="small err-text">
+            Could not get the login URL: {errorMessage(urlState.error)}.{" "}
+            <button className="link-btn" onClick={urlState.refresh}>
+              Retry
             </button>
-          </>
+          </span>
         ) : (
-          <button className="btn primary" disabled>
+          <button className="btn" disabled>
             <Spinner /> Preparing login link…
           </button>
         )}
@@ -95,20 +98,14 @@ export function AuthorizeForm({ onConnected, currentUser }: Props) {
           />
         </div>
         {error && (
-          <div className="notice error" role="alert">
-            <IconAlert />
-            <span>{error}</span>
+          <div className="strip danger" role="alert">
+            {error}
           </div>
         )}
-        {connected && (
-          <div className="auth-user">
-            <IconCheck />
-            Connected as {connected.username}
-          </div>
-        )}
+        {connected && <StatusDot tone="ok">Connected as {connected.username}</StatusDot>}
         <div className="btn-row">
           <button className="btn primary" type="submit" disabled={busy || !code.trim()}>
-            {busy ? <Spinner /> : <IconCheck />} Connect
+            {busy && <Spinner />} Connect
           </button>
         </div>
       </form>

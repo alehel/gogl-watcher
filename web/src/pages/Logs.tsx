@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { errorMessage, getLogs, type LogEntry, type LogLevel } from "../api";
-import { ApiErrorNotice, EmptyState, Loading, Spinner, Switch } from "../components/Common";
-import { IconSearch } from "../components/Icons";
+import { ApiErrorNotice, EmptyState, Loading, Spinner } from "../components/Common";
 import { useToast } from "../components/Toast";
 import { formatAbsolute, formatLogTime } from "../format";
 import { useDebounced, usePolling } from "../hooks";
@@ -67,15 +66,9 @@ export function LogsPage() {
   return (
     <div className="stack">
       <div className="page-head">
-        <h1>Logs</h1>
-        <Switch checked={auto} onChange={setAuto} label={<span className="small">Auto-refresh</span>} />
-        {!auto && (
-          <button className="btn sm" onClick={newest.refresh}>
-            Refresh
-          </button>
-        )}
+        <h1 className="page-title">Logs</h1>
       </div>
-      <div className="toolbar" style={{ marginBottom: 0 }}>
+      <div className="toolbar">
         <select
           className="select"
           value={level}
@@ -88,17 +81,23 @@ export function LogsPage() {
             </option>
           ))}
         </select>
-        <div className="search">
-          <IconSearch />
-          <input
-            className="input"
-            type="search"
-            placeholder="Search messages…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            aria-label="Search logs"
-          />
-        </div>
+        <input
+          className="input search"
+          type="search"
+          placeholder="Search messages"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          aria-label="Search logs"
+        />
+        <label className="toggle">
+          <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
+          Auto-refresh
+        </label>
+        {!auto && (
+          <button className="btn" onClick={newest.refresh}>
+            Refresh
+          </button>
+        )}
       </div>
 
       <ApiErrorNotice error={newest.error} stale={rows.length > 0} />
@@ -106,26 +105,26 @@ export function LogsPage() {
       {newest.loading && rows.length === 0 ? (
         <Loading text="Loading logs…" />
       ) : rows.length === 0 ? (
-        <EmptyState title="No log entries">
-          {dq ? "Nothing matches the search." : "Nothing has been logged at this level yet."}
-        </EmptyState>
+        <EmptyState>{dq ? "Nothing matches the search." : "Nothing has been logged at this level yet."}</EmptyState>
       ) : (
-        <div className="log-list">
-          {rows.map((r) => (
-            <div key={r.id} className={`log-row ${r.level === "error" ? "error" : ""}`}>
-              <span className="ts" title={formatAbsolute(r.ts)}>
-                {formatLogTime(r.ts)}
-              </span>
-              <span className={`lvl ${r.level}`}>{r.level}</span>
-              <span className="comp" title={r.component}>
-                {r.component}
-              </span>
-              <span className="msg">{r.message}</span>
-            </div>
-          ))}
+        <div>
+          <div className="log-list">
+            {rows.map((r) => (
+              <div key={r.id} className="log-row">
+                <span className="ts" title={formatAbsolute(r.ts)}>
+                  {formatLogTime(r.ts)}
+                </span>
+                <span className={`lvl ${r.level}`}>{r.level}</span>
+                <span className="comp" title={r.component}>
+                  {r.component}
+                </span>
+                <span className="msg">{r.message}</span>
+              </div>
+            ))}
+          </div>
           <div className="log-foot">
             {hasMore ? (
-              <button className="btn sm" onClick={loadOlder} disabled={loadingOlder}>
+              <button className="btn" onClick={loadOlder} disabled={loadingOlder}>
                 {loadingOlder && <Spinner />} Load older
               </button>
             ) : (

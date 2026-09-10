@@ -32,7 +32,7 @@ export function Modal({ title, onClose, children, footer }: Props) {
       <div className="modal" role="dialog" aria-modal="true" aria-label={title}>
         <div className="modal-head">
           <h2>{title}</h2>
-          <button className="btn ghost icon-only" onClick={onClose} aria-label="Close">
+          <button className="btn icon" onClick={onClose} aria-label="Close">
             <IconClose />
           </button>
         </div>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   completeSetup,
@@ -14,22 +14,23 @@ import {
 } from "../api";
 import { AuthorizeForm } from "../components/AuthorizeForm";
 import { Loading, Spinner } from "../components/Common";
-import { IconAlert, IconCheck, IconLogo } from "../components/Icons";
+import { Brand } from "../components/Layout";
 import {
   ALL_PLATFORMS,
   LanguageFallbackSwitch,
   LanguagePicker,
   PlatformPicker,
 } from "../components/SettingsFields";
+import { StatusDot } from "../components/StatusDot";
 import { useStatus } from "../components/StatusContext";
 import { useAsync } from "../hooks";
 import { PLATFORM_LABELS } from "../format";
 
 const STEPS = [
-  { key: "auth", label: "1. Authorize" },
-  { key: "platforms", label: "2. Platforms" },
-  { key: "content", label: "3. Content" },
-  { key: "done", label: "4. Finish" },
+  { key: "auth", label: "Authorize" },
+  { key: "platforms", label: "Platforms" },
+  { key: "content", label: "Content" },
+  { key: "done", label: "Finish" },
 ] as const;
 
 function stepIndex(step: SetupStep): number {
@@ -58,96 +59,88 @@ export function SetupPage() {
     if (i <= furthest) setActive(i);
   };
 
+  const withSettings = (render: (s: Settings) => JSX.Element) =>
+    settingsState.data ? (
+      render(settingsState.data)
+    ) : settingsState.error ? (
+      <LoadError error={settingsState.error} retry={settingsState.refresh} />
+    ) : (
+      <Loading text="Loading settings…" />
+    );
+
   return (
     <div className="wizard">
-      <div className="brand">
-        <span className="brand-mark">
-          <IconLogo />
-        </span>
-        gogl-watcher setup
-      </div>
+      <Brand suffix="setup" />
 
       <div className="stepper" role="group" aria-label="Setup steps">
         {STEPS.map((s, i) => {
           const cls = i === active ? "current" : i < furthest || i < active ? "done" : "";
           return (
-            <button
-              key={s.key}
-              type="button"
-              className={`step ${cls}`}
-              onClick={() => goto(i)}
-              disabled={i > furthest}
-              aria-current={i === active ? "step" : undefined}
-            >
-              <span className="bar" />
-              <span className="label">{s.label}</span>
-            </button>
+            <Fragment key={s.key}>
+              {i > 0 && <span className="line" aria-hidden="true" />}
+              <button
+                type="button"
+                className={`step ${cls}`}
+                onClick={() => goto(i)}
+                disabled={i > furthest}
+                aria-current={i === active ? "step" : undefined}
+              >
+                <span className="n">{i + 1}</span>
+                <span className="label">{s.label}</span>
+              </button>
+            </Fragment>
           );
         })}
       </div>
 
-      <div className="card">
-        {active === 0 && (
-          <AuthStep
-            user={status?.user ?? null}
-            onConnected={() => {
+      {active === 0 && (
+        <AuthStep
+          user={status?.user ?? null}
+          onConnected={() => {
+            refresh();
+            setActive(1);
+          }}
+        />
+      )}
+      {active === 1 &&
+        withSettings((s) => (
+          <PlatformsStep
+            settings={s}
+            onSaved={() => {
+              settingsState.refresh();
               refresh();
-              setActive(1);
+              setActive(2);
+            }}
+            onBack={() => setActive(0)}
+          />
+        ))}
+      {active === 2 &&
+        withSettings((s) => (
+          <ContentStep
+            settings={s}
+            languages={languages}
+            languagesError={languagesState.error}
+            onSaved={() => {
+              settingsState.refresh();
+              refresh();
+              setActive(3);
+            }}
+            onBack={() => setActive(1)}
+          />
+        ))}
+      {active === 3 &&
+        withSettings((s) => (
+          <FinishStep
+            settings={s}
+            languages={languages}
+            user={status?.user ?? null}
+            onBack={() => setActive(2)}
+            onDone={() => {
+              refresh();
+              navigate("/", { replace: true });
             }}
           />
-        )}
-        {active === 1 &&
-          (settingsState.data ? (
-            <PlatformsStep
-              settings={settingsState.data}
-              onSaved={() => {
-                settingsState.refresh();
-                refresh();
-                setActive(2);
-              }}
-              onBack={() => setActive(0)}
-            />
-          ) : settingsState.error ? (
-            <LoadError error={settingsState.error} retry={settingsState.refresh} />
-          ) : (
-            <Loading text="Loading settings…" />
-          ))}
-        {active === 2 &&
-          (settingsState.data ? (
-            <ContentStep
-              settings={settingsState.data}
-              languages={languages}
-              languagesError={languagesState.error}
-              onSaved={() => {
-                settingsState.refresh();
-                refresh();
-                setActive(3);
-              }}
-              onBack={() => setActive(1)}
-            />
-          ) : settingsState.error ? (
-            <LoadError error={settingsState.error} retry={settingsState.refresh} />
-          ) : (
-            <Loading text="Loading settings…" />
-          ))}
-        {active === 3 &&
-          (settingsState.data ? (
-            <FinishStep
-              settings={settingsState.data}
-              languages={languages}
-              user={status?.user ?? null}
-              onBack={() => setActive(2)}
-              onDone={() => {
-                refresh();
-                navigate("/", { replace: true });
-              }}
-            />
-          ) : settingsState.error ? (
-            <LoadError error={settingsState.error} retry={settingsState.refresh} />
-          ) : (
-            <Loading text="Loading settings…" />
-          ))}
-      </div>
+        ))}
     </div>
   );
 }
@@ -155,10 +148,7 @@ export function SetupPage() {
 function LoadError({ error, retry }: { error: unknown; retry: () => void }) {
   return (
     <div className="stack">
-      <div className="notice error">
-        <IconAlert />
-        <span>Could not load settings: {errorMessage(error)}</span>
-      </div>
+      <div className="strip danger">Could not load settings: {errorMessage(error)}</div>
       <div>
         <button className="btn" onClick={retry}>
           Retry
@@ -170,16 +160,11 @@ function LoadError({ error, retry }: { error: unknown; retry: () => void }) {
 
 function AuthStep({ user, onConnected }: { user: User | null; onConnected: (u: User) => void }) {
   return (
-    <>
-      <h1>Connect your GOG account</h1>
-      {user && (
-        <div className="auth-user">
-          <IconCheck />
-          Connected as {user.username}
-        </div>
-      )}
+    <div className="wizard-step">
+      <h1 className="page-title">Connect your GOG account</h1>
+      {user && <StatusDot tone="ok">Connected as {user.username}</StatusDot>}
       <AuthorizeForm onConnected={onConnected} currentUser={user} />
-    </>
+    </div>
   );
 }
 
@@ -210,28 +195,23 @@ function PlatformsStep({
   };
 
   return (
-    <>
-      <h1>Which platforms do you want installers for?</h1>
+    <div className="wizard-step">
+      <h1 className="page-title">Which platforms do you want installers for?</h1>
       <p className="lead">
         For every game in your library the offline installers for these platforms will be downloaded, when GOG offers
         them. Pick at least one.
       </p>
       <PlatformPicker value={platforms} onChange={setPlatforms} disabled={busy} />
-      {error && (
-        <div className="notice error">
-          <IconAlert />
-          <span>{error}</span>
-        </div>
-      )}
-      <div className="actions">
-        <button className="btn" onClick={onBack} disabled={busy}>
+      {error && <div className="strip danger">{error}</div>}
+      <div className="wizard-actions">
+        <button className="btn text" onClick={onBack} disabled={busy}>
           Back
         </button>
         <button className="btn primary" onClick={save} disabled={busy || platforms.length === 0}>
           {busy && <Spinner />} Continue
         </button>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -252,21 +232,15 @@ function YesNo({
 }) {
   return (
     <div className="field">
-      <span className="field-label">{label}</span>
+      <span className="field-label" style={{ color: "var(--text)" }}>
+        {label}
+      </span>
       <span className="hint">{hint}</span>
-      <div className="check-row" role="radiogroup" aria-label={label}>
+      <div className="check-inline" role="radiogroup" aria-label={label} style={{ marginTop: 4 }}>
         {[true, false].map((v) => (
-          <label key={String(v)} className={`check ${value === v ? "checked" : ""}`}>
-            <input
-              type="radio"
-              name={name}
-              checked={value === v}
-              disabled={disabled}
-              onChange={() => onChange(v)}
-            />
-            <span className="check-text">
-              <span>{v ? "Yes" : "No"}</span>
-            </span>
+          <label key={String(v)} className="check">
+            <input type="radio" name={name} checked={value === v} disabled={disabled} onChange={() => onChange(v)} />
+            <span>{v ? "Yes" : "No"}</span>
           </label>
         ))}
       </div>
@@ -322,8 +296,8 @@ function ContentStep({
   };
 
   return (
-    <>
-      <h1>What should be downloaded besides the base game?</h1>
+    <div className="wizard-step">
+      <h1 className="page-title">What should be downloaded besides the base game?</h1>
       <YesNo
         name="dlc"
         label="Include DLC"
@@ -341,31 +315,30 @@ function ContentStep({
         disabled={busy}
       />
       <div className="field">
-        <span className="field-label">Languages</span>
+        <span className="field-label" style={{ color: "var(--text)" }}>
+          Languages
+        </span>
         <span className="hint">Installers exist per language; pick every language you want. At least one is required.</span>
         {languagesError ? (
           <span className="err-text small">Could not load the language list: {errorMessage(languagesError)}</span>
         ) : languages.length === 0 ? (
           <Loading text="Loading languages…" />
         ) : null}
-        <LanguagePicker options={languages} value={langs} onChange={setLangs} disabled={busy} />
+        <div style={{ marginTop: 4 }}>
+          <LanguagePicker options={languages} value={langs} onChange={setLangs} disabled={busy} />
+        </div>
       </div>
       <LanguageFallbackSwitch value={fallback} onChange={setFallback} disabled={busy} />
-      {error && (
-        <div className="notice error">
-          <IconAlert />
-          <span>{error}</span>
-        </div>
-      )}
-      <div className="actions">
-        <button className="btn" onClick={onBack} disabled={busy}>
+      {error && <div className="strip danger">{error}</div>}
+      <div className="wizard-actions">
+        <button className="btn text" onClick={onBack} disabled={busy}>
           Back
         </button>
         <button className="btn primary" onClick={save} disabled={busy || !valid}>
           {busy && <Spinner />} Continue
         </button>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -404,24 +377,28 @@ function FinishStep({
   };
 
   return (
-    <>
-      <h1>Ready to go</h1>
+    <div className="wizard-step">
+      <h1 className="page-title">Ready to go</h1>
       <p className="lead">
         Here is what gogl-watcher will keep in sync. You can change any of this later under Settings.
       </p>
-      <dl className="summary">
+      <dl className="kv summary-list">
         <dt>GOG account</dt>
         <dd>{user ? user.username : <span className="err-text">not connected</span>}</dd>
         <dt>Platforms</dt>
         <dd>
-          {settings.platforms.length
-            ? ALL_PLATFORMS.filter((p) => settings.platforms.includes(p)).map((p) => PLATFORM_LABELS[p]).join(", ")
-            : <span className="err-text">none chosen</span>}
+          {settings.platforms.length ? (
+            ALL_PLATFORMS.filter((p) => settings.platforms.includes(p))
+              .map((p) => PLATFORM_LABELS[p])
+              .join(", ")
+          ) : (
+            <span className="err-text">none chosen</span>
+          )}
         </dd>
         <dt>Languages</dt>
         <dd>
           {langNames || <span className="err-text">none chosen</span>}
-          {settings.language_fallback && <span className="muted"> (with fallback)</span>}
+          {settings.language_fallback && <span className="muted">&nbsp;(with fallback)</span>}
         </dd>
         <dt>DLC</dt>
         <dd>{settings.include_dlc ? "Included" : "Not included"}</dd>
@@ -433,20 +410,15 @@ function FinishStep({
       <p className="muted small">
         Starting will run the first library sync right away and begin downloading installers into the library folder.
       </p>
-      {error && (
-        <div className="notice error">
-          <IconAlert />
-          <span>{error}</span>
-        </div>
-      )}
-      <div className="actions">
-        <button className="btn" onClick={onBack} disabled={busy}>
+      {error && <div className="strip danger">{error}</div>}
+      <div className="wizard-actions">
+        <button className="btn text" onClick={onBack} disabled={busy}>
           Back
         </button>
         <button className="btn primary" onClick={start} disabled={busy}>
-          {busy ? <Spinner /> : <IconCheck />} Start
+          {busy && <Spinner />} Start
         </button>
       </div>
-    </>
+    </div>
   );
 }

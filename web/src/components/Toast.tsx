@@ -13,6 +13,8 @@ interface ToastApi {
   error: (text: string) => void;
 }
 
+const TONE: Record<Kind, string> = { info: "info", success: "ok", error: "danger" };
+
 const ToastContext = createContext<ToastApi | null>(null);
 
 export function ToastProvider({ children }: { children: ReactNode }) {
@@ -46,9 +48,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       <div className="toasts" aria-live="polite">
         {toasts.map((t) => (
-          <div key={t.id} className={`toast ${t.kind}`}>
+          <div key={t.id} className="toast">
+            <span className={`dot ${TONE[t.kind]}`} aria-hidden="true" />
             <span className="text">{t.text}</span>
-            <button className="btn ghost icon-only sm" onClick={() => dismiss(t.id)} aria-label="Dismiss">
+            <button className="btn icon" onClick={() => dismiss(t.id)} aria-label="Dismiss">
               <IconClose />
             </button>
           </div>

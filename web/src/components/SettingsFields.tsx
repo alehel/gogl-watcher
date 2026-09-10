@@ -1,6 +1,6 @@
 import type { LanguageOption, Platform, RemovedSummary } from "../api";
 import { formatBytes, PLATFORM_LABELS, plural } from "../format";
-import { CheckCard, Switch } from "./Common";
+import { Checkbox } from "./Common";
 import { Modal } from "./Modal";
 
 export const ALL_PLATFORMS: Platform[] = ["windows", "mac", "linux"];
@@ -21,9 +21,9 @@ export function PlatformPicker({
     onChange(ALL_PLATFORMS.filter((x) => set.has(x)));
   };
   return (
-    <div className="check-row">
+    <div className="check-inline" role="group" aria-label="Platforms">
       {ALL_PLATFORMS.map((p) => (
-        <CheckCard
+        <Checkbox
           key={p}
           checked={value.includes(p)}
           onChange={(on) => toggle(p, on)}
@@ -57,16 +57,16 @@ export function LanguagePicker({
   };
   if (all.length === 0) return <span className="muted">No languages available.</span>;
   return (
-    <div className="chip-list" role="group" aria-label="Languages">
-      {all.map((o) => {
-        const on = value.includes(o.code);
-        return (
-          <label key={o.code} className={`chip ${on ? "on" : ""}`}>
-            <input type="checkbox" checked={on} disabled={disabled} onChange={() => toggle(o.code)} />
-            {o.name} <span className="count">{o.code}</span>
-          </label>
-        );
-      })}
+    <div className="check-grid" role="group" aria-label="Languages">
+      {all.map((o) => (
+        <label key={o.code} className="check">
+          <input type="checkbox" checked={value.includes(o.code)} disabled={disabled} onChange={() => toggle(o.code)} />
+          <span className="clip">
+            {o.name}
+            <span className="mono code">{o.code}</span>
+          </span>
+        </label>
+      ))}
     </div>
   );
 }
@@ -81,16 +81,12 @@ export function LanguageFallbackSwitch({
   disabled?: boolean;
 }) {
   return (
-    <Switch
+    <Checkbox
       checked={value}
       onChange={onChange}
       disabled={disabled}
-      label={
-        <span>
-          Fall back to another language{" "}
-          <span className="muted small">— if none of the chosen languages exist for a game, download what GOG offers</span>
-        </span>
-      }
+      label="Fall back to another language"
+      desc="If none of the chosen languages exist for a game, download what GOG offers."
     />
   );
 }
@@ -137,14 +133,14 @@ export function RemovalConfirmModal({
       onClose={onCancel}
       footer={
         <>
-          <button className="btn" onClick={onCancel} disabled={busy}>
+          <button className="btn text" onClick={onCancel} disabled={busy}>
             Cancel
           </button>
           <button className="btn primary" onClick={onKeep} disabled={busy}>
-            Keep files on disk
+            Keep files
           </button>
           <button className="btn danger" onClick={onDelete} disabled={busy}>
-            Delete files from disk
+            Delete files
           </button>
         </>
       }
@@ -157,7 +153,7 @@ export function RemovalConfirmModal({
       </p>
       {reasons.length > 0 && (
         <div>
-          <div className="muted small" style={{ marginBottom: 4 }}>
+          <div className="small faint" style={{ marginBottom: 4 }}>
             Because:
           </div>
           <ul>

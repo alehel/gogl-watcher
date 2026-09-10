@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { errorMessage, NetworkError } from "./api";
 import { Loading } from "./components/Common";
-import { IconAlert } from "./components/Icons";
 import { Layout } from "./components/Layout";
 import { StatusProvider, useStatus } from "./components/StatusContext";
 import { ToastProvider } from "./components/Toast";
@@ -31,18 +30,18 @@ function Gate({ children, wizard }: { children: ReactNode; wizard: boolean }) {
     const network = error instanceof NetworkError;
     return (
       <div className="fullscreen-center">
-        <div className="card">
-          <h1 style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <IconAlert /> {network ? "API unreachable" : "Something went wrong"}
-          </h1>
+        <div className="box stack">
+          <h1>{network ? "API unreachable" : "Something went wrong"}</h1>
           <p className="muted">
             {network
               ? "The gogl-watcher backend is not responding. It may still be starting up; this page keeps retrying."
               : errorMessage(error)}
           </p>
-          <button className="btn" onClick={refresh}>
-            Retry now
-          </button>
+          <div>
+            <button className="btn" onClick={refresh}>
+              Retry now
+            </button>
+          </div>
         </div>
       </div>
     );

@@ -2,136 +2,108 @@ import { Link } from "react-router-dom";
 import {
   errorMessage,
   getDownloads,
+  NetworkError,
   pauseDownloads,
   resumeDownloads,
   startSync,
   type ActiveDownload,
   type Status,
 } from "../api";
-import { ApiErrorNotice, EmptyState, Loading, TimeAgo } from "../components/Common";
-import { IconDisk, IconDownload, IconLibrary, IconPause, IconPlay, IconRefresh } from "../components/Icons";
+import { ApiErrorNotice, EmptyState, Loading, Spinner, TimeAgo } from "../components/Common";
+import { DataTable } from "../components/DataTable";
 import { ProgressBar } from "../components/ProgressBar";
+import { StatusDot } from "../components/StatusDot";
 import { useStatus } from "../components/StatusContext";
 import { useToast } from "../components/Toast";
-import { formatBytes, formatDuration, formatPercent, formatSpeed, ratio } from "../format";
-import { useAction, usePolling } from "../hooks";
+import { formatBytes, formatDuration, formatRelative, formatSpeed, plural, ratio } from "../format";
+import { useAction, useNow, usePolling } from "../hooks";
 
 export function DashboardPage() {
   const { status, error, loading, refresh } = useStatus();
   const downloads = usePolling(getDownloads, 2000);
+  const now = useNow();
 
   if (loading && !status) return <Loading text="Loading status…" />;
   if (!status) return <ApiErrorNotice error={error} />;
 
+  const l = status.library;
+  const d = status.downloads;
+  const bytesFrac = ratio(l.bytes_done, l.bytes_total);
+  const diskFrac = ratio(status.disk.free_bytes, status.disk.total_bytes);
+  const diskLow = status.disk.total_bytes > 0 && diskFrac < 0.05;
+
+  const parts: string[] = [`${l.complete.toLocaleString()} of ${plural(l.games, "game")} complete`];
+  if (d.active > 0) parts.push(`${d.active} downloading at ${formatSpeed(d.speed_bps)}`);
+  else if (d.paused) parts.push("downloads paused");
+  if (d.queued > 0) parts.push(`${d.queued.toLocaleString()} queued`);
+  if (status.sync.running) parts.push("sync running");
+  else if (status.sync.next_run_at) parts.push(`next check ${formatRelative(status.sync.next_run_at, now)}`);
+
   return (
     <div className="stack">
-      <div className="page-head">
-        <h1>Dashboard</h1>
+      {/* Network failures are already announced by the layout strip. */}
+      {!(error instanceof NetworkError) && <ApiErrorNotice error={error} stale />}
+      <div>
+        <h1 className="page-title">Dashboard</h1>
+        <p className="summary">{parts.join(" · ")}</p>
       </div>
-      <ApiErrorNotice error={error} stale />
-      <div className="grid two">
-        <LibraryCard status={status} />
-        <DiskCard status={status} />
-        <SyncCard status={status} onChanged={refresh} />
-        <DownloadsCard
-          status={status}
-          onChanged={() => {
-            refresh();
-            downloads.refresh();
-          }}
-        />
-      </div>
-      <div className="card">
-        <div className="card-head">
-          <h2>
-            <IconDownload /> Active downloads
-          </h2>
-          <Link to="/downloads" className="small">
-            View queue
-          </Link>
-        </div>
-        {downloads.data ? (
-          downloads.data.active.length ? (
-            <ActiveList items={downloads.data.active} />
-          ) : (
-            <EmptyState compact title={status.downloads.paused ? "Downloads are paused" : "Nothing downloading"}>
-              {status.downloads.queued > 0
-                ? `${status.downloads.queued} files are queued.`
-                : "New files show up here as soon as a sync finds them."}
-            </EmptyState>
-          )
-        ) : downloads.error ? (
-          <ApiErrorNotice error={downloads.error} />
-        ) : (
-          <Loading />
-        )}
-      </div>
-    </div>
-  );
-}
 
-function LibraryCard({ status }: { status: Status }) {
-  const l = status.library;
-  const frac = ratio(l.bytes_done, l.bytes_total);
-  return (
-    <div className="card">
-      <div className="card-head">
-        <h2>
-          <IconLibrary /> Library
-        </h2>
-        <Link to="/library" className="small">
-          Browse
-        </Link>
-      </div>
-      <div className="stack">
-        <div className="stats">
-          <Stat label="Games" value={l.games} />
-          <Stat label="Complete" value={l.complete} tone="green" />
-          <Stat label="Pending" value={l.pending + l.partial} tone="amber" />
-          <Stat label="Downloading" value={l.downloading} tone="blue" />
-          <Stat label="Errors" value={l.error} tone="red" />
-          <Stat label="Unavailable" value={l.unavailable} tone="grey" />
+      <div>
+        <div className="status-strip">
+          <Item label="Games" value={l.games} />
+          <Item label="Complete" value={l.complete} />
+          <Item label="Pending" value={l.pending + l.partial} />
+          <Item label="Downloading" value={l.downloading} />
+          <Item label="Errors" value={l.error} danger={l.error > 0} />
+          <Item label="Unavailable" value={l.unavailable} />
+          <Item label="Library size" value={`${formatBytes(l.bytes_done)} of ${formatBytes(l.bytes_total)}`} />
+          <Item label="Disk free" value={formatBytes(status.disk.free_bytes)} danger={diskLow} />
         </div>
-        <div>
-          <div className="progress-row small muted" style={{ marginBottom: 4 }}>
-            <span className="num">
-              {formatBytes(l.bytes_done)} of {formatBytes(l.bytes_total)}
-            </span>
-            <span style={{ marginLeft: "auto" }} className="num">
-              {formatPercent(frac)}
-            </span>
+        <ProgressBar line value={bytesFrac} label="Library bytes downloaded" />
+      </div>
+
+      <div className="two-col">
+        <section className="section">
+          <div className="section-head">
+            <h2>Activity</h2>
+            <div className="actions">
+              <PauseButton
+                status={status}
+                onChanged={() => {
+                  refresh();
+                  downloads.refresh();
+                }}
+              />
+            </div>
           </div>
-          <ProgressBar value={frac} size="lg" tone={frac >= 1 && l.bytes_total > 0 ? "green" : "accent"} />
-        </div>
+          {downloads.data ? (
+            downloads.data.active.length ? (
+              <ActiveTable items={downloads.data.active} />
+            ) : (
+              <EmptyState>
+                {d.paused ? "Downloads are paused." : "Nothing downloading."}
+                {d.queued > 0 ? ` ${plural(d.queued, "file")} queued.` : ""}
+              </EmptyState>
+            )
+          ) : downloads.error ? (
+            <ApiErrorNotice error={downloads.error} />
+          ) : (
+            <Loading />
+          )}
+        </section>
+        <SyncSection status={status} onChanged={refresh} />
       </div>
     </div>
   );
 }
 
-function DiskCard({ status }: { status: Status }) {
-  const d = status.disk;
-  const used = Math.max(0, d.total_bytes - d.free_bytes);
-  const frac = ratio(used, d.total_bytes);
-  const tone = frac > 0.95 ? "red" : frac > 0.85 ? "amber" : "accent";
+function Item({ label, value, danger }: { label: string; value: number | string; danger?: boolean }) {
   return (
-    <div className="card">
-      <div className="card-head">
-        <h2>
-          <IconDisk /> Disk
-        </h2>
-      </div>
-      <div className="stack">
-        <div className="stats">
-          <Stat label="Free" value={formatBytes(d.free_bytes)} tone={frac > 0.95 ? "red" : undefined} />
-          <Stat label="Used" value={formatBytes(used)} />
-          <Stat label="Total" value={formatBytes(d.total_bytes)} />
-        </div>
-        <ProgressBar value={frac} size="lg" tone={tone} label="Disk usage" />
-        <dl className="kv">
-          <dt>Library folder</dt>
-          <dd className="mono">{d.library_dir || "—"}</dd>
-        </dl>
-      </div>
+    <div className="item">
+      <span className="label">{label}</span>
+      <span className={`value${danger ? " danger" : ""}`}>
+        {typeof value === "number" ? value.toLocaleString() : value}
+      </span>
     </div>
   );
 }
@@ -142,7 +114,7 @@ const PHASES: Record<string, string> = {
   reconciling: "Reconciling files",
 };
 
-function SyncCard({ status, onChanged }: { status: Status; onChanged: () => void }) {
+function SyncSection({ status, onChanged }: { status: Status; onChanged: () => void }) {
   const s = status.sync;
   const toast = useToast();
   const sync = useAction(startSync);
@@ -159,153 +131,104 @@ function SyncCard({ status, onChanged }: { status: Status; onChanged: () => void
   };
 
   return (
-    <div className="card">
-      <div className="card-head">
-        <h2>
-          <IconRefresh /> Sync
-          {s.running ? <span className="badge blue">Running</span> : <span className="badge grey">Idle</span>}
-        </h2>
-        <button className="btn sm" onClick={run} disabled={!canSync || sync.pending}>
-          <IconRefresh /> Sync now
-        </button>
+    <section className="section">
+      <div className="section-head">
+        <h2>Sync</h2>
+        <div className="actions">
+          <button className="btn" onClick={run} disabled={!canSync || sync.pending}>
+            {sync.pending && <Spinner />} Check GOG now
+          </button>
+        </div>
       </div>
-      <div className="stack">
-        {s.running && (
-          <div>
-            <div className="small muted" style={{ marginBottom: 4 }}>
-              {PHASES[s.phase] ?? "Working"}
-              {s.games_total > 0 && (
-                <span className="num">
-                  {" "}
-                  — {s.games_done} / {s.games_total} games
-                </span>
-              )}
-            </div>
-            <ProgressBar
-              value={s.games_total > 0 ? ratio(s.games_done, s.games_total) : 0}
-              tone="blue"
-              striped
-            />
-          </div>
-        )}
-        <dl className="kv">
-          <dt>Last run</dt>
-          <dd>
-            {s.last_finished_at ? (
-              <TimeAgo iso={s.last_finished_at} />
-            ) : s.last_started_at ? (
-              <TimeAgo iso={s.last_started_at} prefix="started " />
-            ) : (
-              <span className="muted">never</span>
-            )}
-          </dd>
-          <dt>Next run</dt>
-          <dd>{s.next_run_at ? <TimeAgo iso={s.next_run_at} /> : <span className="muted">not scheduled</span>}</dd>
-          {s.last_error && (
-            <>
-              <dt>Last error</dt>
-              <dd className="err-text">{s.last_error}</dd>
-            </>
+      <dl className="kv">
+        <dt>Status</dt>
+        <dd>
+          {s.running ? (
+            <StatusDot tone="info">
+              {PHASES[s.phase] ?? "Running"}
+              {s.games_total > 0 ? ` · ${s.games_done} / ${s.games_total}` : ""}
+            </StatusDot>
+          ) : !status.authenticated ? (
+            <StatusDot tone="danger">
+              <span>
+                Not connected — <Link to="/auth">re-authorize</Link>
+              </span>
+            </StatusDot>
+          ) : (
+            <StatusDot tone="muted">Idle</StatusDot>
           )}
-        </dl>
-        {!status.authenticated && (
-          <div className="small err-text">
-            Not connected to GOG — <Link to="/auth">re-authorize</Link> to sync.
-          </div>
-        )}
+        </dd>
+        <dt>Last run</dt>
+        <dd>
+          {s.last_finished_at ? (
+            <TimeAgo iso={s.last_finished_at} />
+          ) : s.last_started_at ? (
+            <TimeAgo iso={s.last_started_at} prefix="started " />
+          ) : (
+            <span className="faint">never</span>
+          )}
+        </dd>
+        <dt>Next run</dt>
+        <dd>{s.next_run_at ? <TimeAgo iso={s.next_run_at} /> : <span className="faint">not scheduled</span>}</dd>
+        <dt>Last error</dt>
+        <dd className={s.last_error ? "err-text" : "faint"}>{s.last_error || "none"}</dd>
+      </dl>
+      <div className="mono muted" title="Library folder">
+        {status.disk.library_dir || "—"}
       </div>
-    </div>
+    </section>
   );
 }
 
-function DownloadsCard({ status, onChanged }: { status: Status; onChanged: () => void }) {
-  const d = status.downloads;
+function PauseButton({ status, onChanged }: { status: Status; onChanged: () => void }) {
   const toast = useToast();
-  const toggle = useAction(d.paused ? resumeDownloads : pauseDownloads);
+  const paused = status.downloads.paused;
+  const toggle = useAction(paused ? resumeDownloads : pauseDownloads);
   const run = async () => {
     try {
-      const res = await toggle.run();
-      const paused = (res as { paused: boolean }).paused;
-      toast.success(paused ? "Downloads paused" : "Downloads resumed");
+      const res = (await toggle.run()) as { paused: boolean };
+      toast.success(res.paused ? "Downloads paused" : "Downloads resumed");
       onChanged();
     } catch (e) {
       toast.error(errorMessage(e));
     }
   };
   return (
-    <div className="card">
-      <div className="card-head">
-        <h2>
-          <IconDownload /> Downloads
-          {d.paused ? (
-            <span className="badge amber">Paused</span>
-          ) : d.active > 0 ? (
-            <span className="badge blue">Active</span>
-          ) : (
-            <span className="badge grey">Idle</span>
-          )}
-        </h2>
-        <button className="btn sm" onClick={run} disabled={toggle.pending}>
-          {d.paused ? (
-            <>
-              <IconPlay /> Resume
-            </>
-          ) : (
-            <>
-              <IconPause /> Pause
-            </>
-          )}
-        </button>
-      </div>
-      <div className="stats">
-        <Stat label="Active" value={d.active} tone={d.active > 0 ? "blue" : undefined} />
-        <Stat label="Queued" value={d.queued} tone={d.queued > 0 ? "amber" : undefined} />
-        <Stat label="Speed" value={formatSpeed(d.speed_bps)} />
-      </div>
-    </div>
+    <button className="btn" onClick={run} disabled={toggle.pending}>
+      {paused ? "Resume" : "Pause"}
+    </button>
   );
 }
 
-function Stat({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number | string;
-  tone?: "green" | "blue" | "amber" | "red" | "grey";
-}) {
+function ActiveTable({ items }: { items: ActiveDownload[] }) {
   return (
-    <div className={`stat ${tone ? `c-${tone}` : ""}`}>
-      <div className="label">{label}</div>
-      <div className="value">{typeof value === "number" ? value.toLocaleString() : value}</div>
-    </div>
-  );
-}
-
-export function ActiveList({ items }: { items: ActiveDownload[] }) {
-  return (
-    <div className="dl-list">
-      {items.map((a) => {
-        const frac = ratio(a.downloaded_bytes, a.size);
-        return (
-          <div key={a.file_id} className="dl-item">
-            <div className="row">
-              <Link className="name" to={`/library/${a.game_id}`} title={a.game_title}>
-                {a.game_title}
-              </Link>
-              <span className="meta">
-                {formatBytes(a.downloaded_bytes)} / {formatBytes(a.size)} · {formatSpeed(a.speed_bps)} · ETA{" "}
-                {formatDuration(a.eta_seconds)}
-              </span>
-            </div>
-            <div className="file" title={a.filename}>
+    <DataTable>
+      <thead>
+        <tr>
+          <th>Game</th>
+          <th>File</th>
+          <th>Progress</th>
+          <th className="num">Speed</th>
+          <th className="num">ETA</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((a) => (
+          <tr key={a.file_id}>
+            <td>
+              <Link to={`/library/${a.game_id}`}>{a.game_title}</Link>
+            </td>
+            <td className="mono clip dl-file" title={a.filename}>
               {a.filename}
-            </div>
-            <ProgressBar value={frac} tone="blue" showPercent striped />
-          </div>
-        );
-      })}
-    </div>
+            </td>
+            <td>
+              <ProgressBar value={ratio(a.downloaded_bytes, a.size)} showPercent tone="info" />
+            </td>
+            <td className="num">{formatSpeed(a.speed_bps)}</td>
+            <td className="num">{formatDuration(a.eta_seconds)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </DataTable>
   );
 }

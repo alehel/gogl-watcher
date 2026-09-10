@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { errorMessage, getDownloads, pauseDownloads, resumeDownloads } from "../api";
 import { ApiErrorNotice, EmptyState, Loading } from "../components/Common";
-import { IconPause, IconPlay } from "../components/Icons";
+import { DataTable } from "../components/DataTable";
 import { ProgressBar } from "../components/ProgressBar";
 import { useStatus } from "../components/StatusContext";
 import { useToast } from "../components/Toast";
@@ -28,90 +28,85 @@ export function DownloadsPage() {
 
   const data = dls.data;
   const totalSpeed = data?.active.reduce((s, a) => s + a.speed_bps, 0) ?? status?.downloads.speed_bps ?? 0;
+  const hidden = data ? data.queued_total - data.queue.length : 0;
 
   return (
     <div className="stack">
       <div className="page-head">
-        <h1>Downloads</h1>
-        {paused ? <span className="badge amber">Paused</span> : <span className="badge grey">Running</span>}
-        <span className="muted small num">{formatSpeed(totalSpeed)}</span>
-        <button className="btn" onClick={run} disabled={toggle.pending}>
-          {paused ? (
-            <>
-              <IconPlay /> Resume
-            </>
-          ) : (
-            <>
-              <IconPause /> Pause
-            </>
-          )}
-        </button>
+        <h1 className="page-title">Downloads</h1>
+        {data && data.active.length > 0 && <span className="muted num">{formatSpeed(totalSpeed)}</span>}
+        <div className="actions">
+          <button className="btn" onClick={run} disabled={toggle.pending}>
+            {paused ? "Resume" : "Pause"}
+          </button>
+        </div>
       </div>
+      {paused && (
+        <div className="strip warn" role="status">
+          Downloads are paused. Queued files wait until you resume.
+        </div>
+      )}
       <ApiErrorNotice error={dls.error} stale={!!data} />
 
       {!data && dls.loading ? (
         <Loading text="Loading downloads…" />
       ) : data ? (
         <>
-          <section className="stack">
-            <h3>Active ({data.active.length})</h3>
+          <section className="section">
+            <div className="section-head">
+              <h2>Active</h2>
+              <span className="meta num">{data.active.length}</span>
+            </div>
             {data.active.length === 0 ? (
-              <EmptyState compact title={paused ? "Downloads are paused" : "Nothing downloading right now"}>
-                {paused ? "Resume to continue with the queue." : "Queued files start automatically."}
-              </EmptyState>
+              <EmptyState>{paused ? "Nothing downloading while paused." : "Nothing downloading."}</EmptyState>
             ) : (
-              <div className="table-wrap">
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Game</th>
-                      <th>File</th>
-                      <th className="num">Size</th>
-                      <th>Progress</th>
-                      <th className="num">Speed</th>
-                      <th className="num">ETA</th>
+              <DataTable>
+                <thead>
+                  <tr>
+                    <th>Game</th>
+                    <th>File</th>
+                    <th className="num">Size</th>
+                    <th>Progress</th>
+                    <th className="num">Downloaded</th>
+                    <th className="num">Speed</th>
+                    <th className="num">ETA</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.active.map((a) => (
+                    <tr key={a.file_id}>
+                      <td className="wrap">
+                        <Link to={`/library/${a.game_id}`}>{a.game_title}</Link>
+                      </td>
+                      <td className="mono clip" title={a.filename}>
+                        {a.filename}
+                      </td>
+                      <td className="num">{formatBytes(a.size)}</td>
+                      <td>
+                        <ProgressBar value={ratio(a.downloaded_bytes, a.size)} showPercent tone="info" />
+                      </td>
+                      <td className="num">{formatBytes(a.downloaded_bytes)}</td>
+                      <td className="num">{formatSpeed(a.speed_bps)}</td>
+                      <td className="num">{formatDuration(a.eta_seconds)}</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {data.active.map((a) => {
-                      const frac = ratio(a.downloaded_bytes, a.size);
-                      return (
-                        <tr key={a.file_id}>
-                          <td className="wrap">
-                            <Link to={`/library/${a.game_id}`}>{a.game_title}</Link>
-                          </td>
-                          <td className="mono" title={a.filename}>
-                            {a.filename}
-                          </td>
-                          <td className="num">{formatBytes(a.size)}</td>
-                          <td className="progress-cell">
-                            <ProgressBar value={frac} size="sm" tone="blue" striped showPercent />
-                            <span className="small muted num">{formatBytes(a.downloaded_bytes)}</span>
-                          </td>
-                          <td className="num">{formatSpeed(a.speed_bps)}</td>
-                          <td className="num">{formatDuration(a.eta_seconds)}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+                  ))}
+                </tbody>
+              </DataTable>
             )}
           </section>
 
-          <section className="stack">
-            <h3>
-              Queue ({data.queued_total.toLocaleString()}
-              {data.queue.length < data.queued_total ? `, showing first ${data.queue.length}` : ""})
-            </h3>
+          <section className="section">
+            <div className="section-head">
+              <h2>Queue</h2>
+              <span className="meta num">{data.queued_total.toLocaleString()}</span>
+            </div>
             {data.queue.length === 0 ? (
-              <EmptyState compact title="Queue is empty">Everything wanted has been downloaded.</EmptyState>
+              <EmptyState>The queue is empty. Everything wanted has been downloaded.</EmptyState>
             ) : (
-              <div className="table-wrap">
-                <table className="table">
+              <>
+                <DataTable>
                   <thead>
                     <tr>
-                      <th className="num">#</th>
                       <th>Game</th>
                       <th>Name</th>
                       <th>OS</th>
@@ -119,9 +114,8 @@ export function DownloadsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {data.queue.map((q, i) => (
+                    {data.queue.map((q) => (
                       <tr key={q.file_id}>
-                        <td className="num faint">{i + 1}</td>
                         <td className="wrap">
                           <Link to={`/library/${q.game_id}`}>{q.game_title}</Link>
                         </td>
@@ -131,8 +125,9 @@ export function DownloadsPage() {
                       </tr>
                     ))}
                   </tbody>
-                </table>
-              </div>
+                </DataTable>
+                {hidden > 0 && <p className="faint small">and {hidden.toLocaleString()} more</p>}
+              </>
             )}
           </section>
         </>

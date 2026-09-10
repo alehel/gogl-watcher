@@ -12,8 +12,7 @@ import {
   type Settings,
   type SettingsPreview,
 } from "../api";
-import { ApiErrorNotice, CheckCard, Loading, Spinner, Switch } from "../components/Common";
-import { IconUser } from "../components/Icons";
+import { ApiErrorNotice, Checkbox, Loading, Spinner } from "../components/Common";
 import {
   LanguageFallbackSwitch,
   LanguagePicker,
@@ -38,10 +37,8 @@ export function SettingsPage() {
 
   if (!settingsState.data) {
     return (
-      <div className="stack">
-        <div className="page-head">
-          <h1>Settings</h1>
-        </div>
+      <div className="stack settings">
+        <h1 className="page-title">Settings</h1>
         {settingsState.error ? (
           <>
             <ApiErrorNotice error={settingsState.error} />
@@ -59,17 +56,15 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="stack">
-      <div className="page-head">
-        <h1>Settings</h1>
-      </div>
+    <div className="stack settings">
+      <h1 className="page-title">Settings</h1>
       <SettingsForm
         key={JSON.stringify(settingsState.data)}
         initial={settingsState.data}
         languages={languages}
         onSaved={settingsState.refresh}
       />
-      <AccountCard />
+      <AccountSection />
     </div>
   );
 }
@@ -155,17 +150,21 @@ function SettingsForm({
     await apply(null);
   };
 
+  const reset = () => {
+    setForm(initial);
+    setMbps(String(kbpsToMbps(initial.speed_limit_kbps)));
+  };
+
   return (
     <>
-      <div className="card">
-        <div className="form-section">
-          <h3>Platforms</h3>
+      <div>
+        <section className="form-section">
+          <h2>Platforms</h2>
           <PlatformPicker value={form.platforms} onChange={(v) => set("platforms", v)} disabled={busy} />
           {form.platforms.length === 0 && <span className="err-text small">Pick at least one platform.</span>}
-        </div>
-        <div className="divider" style={{ margin: "16px 0" }} />
-        <div className="form-section">
-          <h3>Languages</h3>
+        </section>
+        <section className="form-section">
+          <h2>Languages</h2>
           {languages.length === 0 && <Loading text="Loading languages…" />}
           <LanguagePicker
             options={languages}
@@ -174,38 +173,40 @@ function SettingsForm({
             disabled={busy}
           />
           {form.languages.length === 0 && <span className="err-text small">Pick at least one language.</span>}
-          <LanguageFallbackSwitch value={form.language_fallback} onChange={(v) => set("language_fallback", v)} disabled={busy} />
-        </div>
-        <div className="divider" style={{ margin: "16px 0" }} />
-        <div className="form-section">
-          <h3>Content</h3>
-          <div className="check-row">
-            <CheckCard
+          <LanguageFallbackSwitch
+            value={form.language_fallback}
+            onChange={(v) => set("language_fallback", v)}
+            disabled={busy}
+          />
+        </section>
+        <section className="form-section">
+          <h2>Content</h2>
+          <div className="check-list">
+            <Checkbox
               checked={form.include_dlc}
               onChange={(v) => set("include_dlc", v)}
               label="Include DLC"
-              hint="Installers for downloadable content you own."
+              desc="Installers for downloadable content you own."
               disabled={busy}
             />
-            <CheckCard
+            <Checkbox
               checked={form.include_extras}
               onChange={(v) => set("include_extras", v)}
               label="Include extras"
-              hint="Soundtracks, manuals, wallpapers and other bonus content."
+              desc="Soundtracks, manuals, wallpapers and other bonus content."
               disabled={busy}
             />
           </div>
-        </div>
-        <div className="divider" style={{ margin: "16px 0" }} />
-        <div className="form-section">
-          <h3>Downloads</h3>
-          <div className="form-grid">
+        </section>
+        <section className="form-section">
+          <h2>Downloads</h2>
+          <div className="form-row">
             <div className="field">
-              <label htmlFor="s-conc">Max concurrent downloads</label>
-              <div className="input-group">
+              <label htmlFor="s-conc">Concurrent downloads</label>
+              <div className="input-unit">
                 <input
                   id="s-conc"
-                  className="input"
+                  className="input num"
                   type="number"
                   min={1}
                   max={8}
@@ -214,15 +215,15 @@ function SettingsForm({
                   onChange={(e) => set("max_concurrent_downloads", clampInt(e.target.value, 1, 8, 1))}
                   disabled={busy}
                 />
-                <span className="suffix">1–8</span>
+                <span className="unit">1–8</span>
               </div>
             </div>
             <div className="field">
               <label htmlFor="s-speed">Speed limit</label>
-              <div className="input-group">
+              <div className="input-unit">
                 <input
                   id="s-speed"
-                  className="input"
+                  className="input num"
                   type="number"
                   min={0}
                   step={0.1}
@@ -231,16 +232,16 @@ function SettingsForm({
                   onBlur={() => setMbps(String(kbpsToMbps(form.speed_limit_kbps)))}
                   disabled={busy}
                 />
-                <span className="suffix">MB/s</span>
+                <span className="unit">MB/s</span>
               </div>
-              <span className="hint">0 = unlimited. Applies to all downloads together.</span>
+              <span className="hint">0 = unlimited, for all downloads together.</span>
             </div>
             <div className="field">
               <label htmlFor="s-interval">Check GOG every</label>
-              <div className="input-group">
+              <div className="input-unit">
                 <input
                   id="s-interval"
-                  className="input"
+                  className="input num"
                   type="number"
                   min={1}
                   max={168}
@@ -249,23 +250,23 @@ function SettingsForm({
                   onChange={(e) => set("check_interval_hours", clampInt(e.target.value, 1, 168, 6))}
                   disabled={busy}
                 />
-                <span className="suffix">hours</span>
+                <span className="unit">hours</span>
               </div>
               <span className="hint">1–168 hours between library syncs.</span>
             </div>
           </div>
-          <Switch
+          <Checkbox
             checked={form.downloads_paused}
             onChange={(v) => set("downloads_paused", v)}
             disabled={busy}
             label="Downloads paused"
           />
-        </div>
-        <div className="form-actions" style={{ marginTop: 16 }}>
+        </section>
+        <div className="form-foot">
           <button className="btn primary" onClick={save} disabled={busy || !dirty || !valid}>
-            {busy && <Spinner />} Save changes
+            {busy && <Spinner />} Save
           </button>
-          <button className="btn ghost" onClick={() => { setForm(initial); setMbps(String(kbpsToMbps(initial.speed_limit_kbps))); }} disabled={busy || !dirty}>
+          <button className="btn text" onClick={reset} disabled={busy || !dirty}>
             Reset
           </button>
           {error && <span className="err-text small">{error}</span>}
@@ -288,7 +289,7 @@ function SettingsForm({
   );
 }
 
-function AccountCard() {
+function AccountSection() {
   const { status, refresh } = useStatus();
   const toast = useToast();
   const navigate = useNavigate();
@@ -311,34 +312,25 @@ function AccountCard() {
 
   const user = status?.user ?? null;
   return (
-    <div className="card">
-      <div className="card-head">
-        <h2>
-          <IconUser /> GOG account
-        </h2>
-      </div>
-      <div className="stack">
-        {status?.authenticated && user ? (
-          <div>
-            Connected as <strong>{user.username}</strong>{" "}
-            <span className="faint small">(id {user.id})</span>
-          </div>
-        ) : (
-          <div className="err-text">
-            Not connected{status?.auth_error ? `: ${status.auth_error}` : ""}.
-          </div>
-        )}
-        <div className="btn-row">
-          <Link to="/auth" className="btn">
-            {status?.authenticated ? "Reconnect" : "Connect"}
-          </Link>
-          {status?.authenticated && (
-            <button className="btn danger" onClick={disconnect} disabled={busy}>
-              {busy && <Spinner />} Disconnect
-            </button>
-          )}
+    <section className="form-section">
+      <h2>GOG account</h2>
+      {status?.authenticated && user ? (
+        <div>
+          Connected as <strong>{user.username}</strong> <span className="faint small mono">id {user.id}</span>
         </div>
+      ) : (
+        <div className="err-text">Not connected{status?.auth_error ? `: ${status.auth_error}` : ""}.</div>
+      )}
+      <div className="btn-row">
+        <Link to="/auth" className="btn">
+          {status?.authenticated ? "Reconnect" : "Connect"}
+        </Link>
+        {status?.authenticated && (
+          <button className="btn danger" onClick={disconnect} disabled={busy}>
+            {busy && <Spinner />} Disconnect
+          </button>
+        )}
       </div>
-    </div>
+    </section>
   );
 }

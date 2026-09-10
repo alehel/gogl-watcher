@@ -1,3 +1,5 @@
+import type { WorksOn } from "./api";
+
 const UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];
 
 /** Human readable size, binary units (1 KB = 1024 B). */
@@ -114,4 +116,15 @@ export function kbpsToMbps(kbps: number): number {
 }
 export function mbpsToKbps(mbps: number): number {
   return Math.round(mbps * 1024);
+}
+
+const PLATFORM_SHORT: Record<keyof WorksOn, string> = { windows: "Win", mac: "Mac", linux: "Linux" };
+const PLATFORM_ORDER: Array<keyof WorksOn> = ["windows", "mac", "linux"];
+
+/** "Win · Mac · Linux" (short) or "Windows · macOS · Linux" (long) from a works_on map. */
+export function platformsText(works: WorksOn | null | undefined, long = false): string {
+  if (!works) return "";
+  return PLATFORM_ORDER.filter((p) => works[p])
+    .map((p) => (long ? PLATFORM_LABELS[p] : PLATFORM_SHORT[p]))
+    .join(" · ");
 }
