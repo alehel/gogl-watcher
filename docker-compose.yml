@@ -4,7 +4,7 @@ services:
       context: .
       args:
         VERSION: ${VERSION:-dev}
-    image: gogl-watcher:${VERSION:-latest}
+    image: ghcr.io/alehel/gogl-watcher:${VERSION:-latest}
     container_name: gogl-watcher
     restart: unless-stopped
     # Run as the owner of the mounted directories so downloads are writable.
