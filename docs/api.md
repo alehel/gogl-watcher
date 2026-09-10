@@ -12,7 +12,7 @@ with an appropriate 4xx/5xx status. Timestamps are RFC 3339 strings or `null`.
 {
   "version": "0.1.0",
   "setup_complete": false,
-  "setup_step": "auth",            // "auth" | "platforms" | "content" | "done"
+  "setup_step": "auth",            // "auth" | "games" | "platforms" | "content" | "done"
   "authenticated": false,
   "auth_error": null,               // string when the stored refresh token stopped working
   "user": null,                     // { "id": "123", "username": "name" } when authenticated
@@ -34,7 +34,8 @@ with an appropriate 4xx/5xx status. Timestamps are RFC 3339 strings or `null`.
   },
   "library": {
     "games": 0, "complete": 0, "pending": 0, "downloading": 0,
-    "partial": 0, "error": 0, "unavailable": 0,
+    "partial": 0, "error": 0, "unavailable": 0, "unsynced": 0, "unselected": 0,
+    "download_mode": "all",         // "all" | "selected" (see settings)
     "bytes_total": 0, "bytes_done": 0
   },
   "disk": { "library_dir": "/library", "free_bytes": 0, "total_bytes": 0 }
@@ -42,6 +43,7 @@ with an appropriate 4xx/5xx status. Timestamps are RFC 3339 strings or `null`.
 ```
 
 `setup_step` tells the UI which wizard step is next: `auth` (no valid GOG token yet),
+`games` (not yet chosen between downloading every game or only selected ones),
 `platforms` (no platform chosen yet), `content` (DLC/extras choice not made yet),
 `done` (setup finished). While `setup_complete` is false every UI route should redirect
 to the wizard.
@@ -66,8 +68,8 @@ Removes stored tokens. 204.
 ## Setup
 
 ### `POST /api/setup/complete`
-Marks setup as complete. Requires authentication, at least one platform, and an explicit
-content choice (see settings). 200 `{ "ok": true }` or 409 `{ "error": "..." }`.
+Marks setup as complete. Requires authentication, a download mode, at least one platform,
+and an explicit content choice (see settings). 200 `{ "ok": true }` or 409 `{ "error": "..." }`.
 Triggers the first library sync.
 
 ## Settings
@@ -76,6 +78,7 @@ Triggers the first library sync.
 
 ```json
 {
+  "download_mode": "all",                // "all" | "selected"; empty until the setup wizard asked
   "platforms": ["windows"],              // any of "windows" | "mac" | "linux"; empty until chosen
   "languages": ["en"],                   // GOG language codes, e.g. "en", "de", "fr"
   "language_fallback": true,             // download another language if none of the chosen exist
@@ -89,6 +92,10 @@ Triggers the first library sync.
 }
 ```
 
+`download_mode` decides which games are downloaded: `all` keeps every owned game, `selected`
+only the games flagged via `PUT /api/games/selection` (none are selected by default). Once
+setup is complete the mode can no longer be empty.
+
 ### `POST /api/settings/preview`
 Body: the full settings object. Returns which already-tracked files would stop being
 wanted if these settings were applied:
@@ -97,9 +104,12 @@ wanted if these settings were applied:
 {
   "needs_confirmation": true,
   "removed": { "files": 12, "bytes": 123456789, "downloaded_files": 10, "downloaded_bytes": 100000000 },
-  "reasons": ["platform:linux", "extras", "dlc", "language:de"]
+  "reasons": ["platform:linux", "extras", "dlc", "language:de", "unselected"]
 }
 ```
+
+`unselected` appears when switching to `download_mode: "selected"` would drop files of games
+that are not selected.
 
 ### `PUT /api/settings`
 Body `{ "settings": {...}, "on_removed": "keep" | "delete" | null }`.
@@ -125,7 +135,8 @@ Language codes available for the picker: `GET /api/settings/languages` →
   "folder": "The Witcher",
   "works_on": { "windows": true, "mac": true, "linux": false },
   "owned": true,
-  "status": "complete",   // "complete" | "downloading" | "pending" | "partial" | "error" | "unavailable" | "unsynced"
+  "selected": false,      // flagged for download; only matters when download_mode is "selected"
+  "status": "complete",   // "complete" | "downloading" | "pending" | "partial" | "error" | "unavailable" | "unsynced" | "unselected"
   "files_total": 3, "files_done": 3,
   "bytes_total": 1234, "bytes_done": 1234,
   "progress": 1.0,
@@ -133,7 +144,8 @@ Language codes available for the picker: `GET /api/settings/languages` →
 } ] }
 ```
 
-Status meaning: `unsynced` – details not fetched yet; `unavailable` – GOG offers no files
+Status meaning: `unselected` – download mode is `selected` and the game is not selected, so
+nothing is fetched for it; `unsynced` – details not fetched yet; `unavailable` – GOG offers no files
 matching the chosen platforms/languages; `pending` – wanted files not yet downloaded;
 `downloading` – at least one file currently transferring; `partial` – some done, some
 pending, none active; `error` – at least one file failed; `complete` – every wanted file done.
@@ -164,6 +176,15 @@ pending, none active; `error` – at least one file failed; `complete` – every
   } ]
 }
 ```
+
+### `PUT /api/games/selection`
+Body `{ "ids": [1207658924, 1207664663], "selected": true, "on_removed": "keep" | "delete" | null }`.
+Flags games for download (or removes the flag). Selecting fetches the games' details in the
+background and queues their files; deselecting drops their tracked files exactly like a settings
+change does: with downloaded files present and `on_removed` null → 409
+`{ "error": "confirmation_required", "removed": {...}, "reasons": ["unselected"] }`, otherwise
+200 `{ "ok": true, "selected": true, "ids": [...] }`. Unknown ids → 404. The flag is stored in
+either download mode but only has an effect in `selected`.
 
 ### `POST /api/games/{id}/sync` – refresh this game's details from GOG now. `{ "ok": true }`.
 ### `POST /api/games/{id}/retry` – reset this game's failed files to pending. `{ "ok": true }`.

@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS games (
   works_mac INTEGER NOT NULL DEFAULT 0,
   works_linux INTEGER NOT NULL DEFAULT 0,
   owned INTEGER NOT NULL DEFAULT 1,
+  selected INTEGER NOT NULL DEFAULT 0,
   details_synced_at INTEGER,
   details_error TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
@@ -115,8 +116,55 @@ CREATE TABLE IF NOT EXISTS logs (
 `
 
 func (d *DB) migrate() error {
-	_, err := d.Exec(schema)
+	if _, err := d.Exec(schema); err != nil {
+		return err
+	}
+	if err := d.addColumn("games", "selected", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return d.migrateDownloadMode()
+}
+
+// addColumn adds a column to an existing table if it is missing.
+func (d *DB) addColumn(table, column, def string) error {
+	rows, err := d.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = d.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, def))
 	return err
+}
+
+// migrateDownloadMode keeps installations set up before the download mode existed
+// downloading everything, which is what they were doing.
+func (d *DB) migrateDownloadMode() error {
+	ctx := context.Background()
+	done, err := d.SetupComplete(ctx)
+	if err != nil || !done {
+		return err
+	}
+	s, err := d.GetSettings(ctx)
+	if err != nil || s.DownloadMode != "" {
+		return err
+	}
+	s.DownloadMode = DownloadAll
+	return d.SaveSettings(ctx, s)
 }
 
 // ---- key/value helpers ----
@@ -139,8 +187,16 @@ func (d *DB) SetKV(ctx context.Context, key, value string) error {
 
 // ---- settings ----
 
+// Download modes: which games of the library are downloaded.
+const (
+	DownloadAll      = "all"      // every owned game
+	DownloadSelected = "selected" // only games the user selected
+)
+
 // Settings are the user-editable options shown in the UI.
 type Settings struct {
+	// DownloadMode is "all" or "selected"; empty until the setup wizard asked.
+	DownloadMode           string   `json:"download_mode"`
 	Platforms              []string `json:"platforms"`
 	Languages              []string `json:"languages"`
 	LanguageFallback       bool     `json:"language_fallback"`
@@ -214,7 +270,23 @@ func (s *Settings) Normalize() error {
 	if s.CheckIntervalHours < 1 || s.CheckIntervalHours > 168 {
 		return fmt.Errorf("check_interval_hours must be between 1 and 168")
 	}
+	s.DownloadMode = strings.ToLower(strings.TrimSpace(s.DownloadMode))
+	switch s.DownloadMode {
+	case "", DownloadAll, DownloadSelected:
+	default:
+		return fmt.Errorf("download_mode must be %q or %q", DownloadAll, DownloadSelected)
+	}
 	return nil
+}
+
+// SelectedOnly reports whether only explicitly selected games are downloaded.
+func (s Settings) SelectedOnly() bool {
+	return s.DownloadMode == DownloadSelected
+}
+
+// WantsGame reports whether a game's files should be downloaded under these settings.
+func (s Settings) WantsGame(g Game) bool {
+	return !s.SelectedOnly() || g.Selected
 }
 
 // WantsPlatform reports whether os is selected.
@@ -359,6 +431,7 @@ type Game struct {
 	WorksMac        bool
 	WorksLinux      bool
 	Owned           bool
+	Selected        bool // chosen for download (only matters in the "selected" download mode)
 	DetailsSyncedAt *time.Time
 	DetailsError    string
 	CreatedAt       time.Time
@@ -411,18 +484,18 @@ func (d *DB) GetGame(ctx context.Context, id int64) (*Game, error) {
 	return &g, nil
 }
 
-const gameSelect = `SELECT id, title, slug, image, folder, works_windows, works_mac, works_linux, owned, details_synced_at, details_error, created_at, updated_at FROM games`
+const gameSelect = `SELECT id, title, slug, image, folder, works_windows, works_mac, works_linux, owned, selected, details_synced_at, details_error, created_at, updated_at FROM games`
 
 func scanGame(rows *sql.Rows) (Game, error) {
 	var g Game
-	var ww, wm, wl, owned int
+	var ww, wm, wl, owned, selected int
 	var synced sql.NullInt64
 	var created, updated int64
-	err := rows.Scan(&g.ID, &g.Title, &g.Slug, &g.Image, &g.Folder, &ww, &wm, &wl, &owned, &synced, &g.DetailsError, &created, &updated)
+	err := rows.Scan(&g.ID, &g.Title, &g.Slug, &g.Image, &g.Folder, &ww, &wm, &wl, &owned, &selected, &synced, &g.DetailsError, &created, &updated)
 	if err != nil {
 		return g, err
 	}
-	g.WorksWindows, g.WorksMac, g.WorksLinux, g.Owned = ww == 1, wm == 1, wl == 1, owned == 1
+	g.WorksWindows, g.WorksMac, g.WorksLinux, g.Owned, g.Selected = ww == 1, wm == 1, wl == 1, owned == 1, selected == 1
 	if synced.Valid {
 		t := time.UnixMilli(synced.Int64)
 		g.DetailsSyncedAt = &t
@@ -469,6 +542,20 @@ func (d *DB) ListGameIDs(ctx context.Context, ownedOnly bool) ([]int64, error) {
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// SetGamesSelected marks the given games as selected (or not) for download.
+func (d *DB) SetGamesSelected(ctx context.Context, ids []int64, selected bool) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	ph := strings.Repeat("?,", len(ids))
+	args := []any{b2i(selected), time.Now().UnixMilli()}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	_, err := d.ExecContext(ctx, `UPDATE games SET selected = ?, updated_at = ? WHERE id IN (`+ph[:len(ph)-1]+`)`, args...)
+	return err
 }
 
 // MarkGamesNotOwned flags every game whose id is not in keep as no longer owned.
@@ -661,6 +748,11 @@ func (d *DB) ListFilesByStatus(ctx context.Context, status string, active bool) 
 // ListActiveFiles returns every active file.
 func (d *DB) ListActiveFiles(ctx context.Context) ([]File, error) {
 	return d.queryFiles(ctx, `WHERE active = 1 ORDER BY game_id, id`)
+}
+
+// ListActiveFilesByGame returns the active files of one game.
+func (d *DB) ListActiveFilesByGame(ctx context.Context, gameID int64) ([]File, error) {
+	return d.queryFiles(ctx, `WHERE game_id = ? AND active = 1 ORDER BY id`, gameID)
 }
 
 // NextPendingFiles returns up to limit pending files ready to be downloaded, skipping exclude ids.

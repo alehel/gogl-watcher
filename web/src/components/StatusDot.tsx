@@ -16,6 +16,7 @@ export function gameStatusTone(status: GameStatus): Tone {
       return "danger";
     case "unavailable":
     case "unsynced":
+    case "unselected":
     default:
       return "muted";
   }
@@ -45,6 +46,7 @@ const GAME_LABELS: Record<GameStatus, string> = {
   error: "Error",
   unavailable: "Unavailable",
   unsynced: "Not synced",
+  unselected: "Not selected",
 };
 
 const FILE_LABELS: Record<FileStatus, string> = {

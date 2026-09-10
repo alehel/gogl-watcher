@@ -14,6 +14,7 @@ import {
 } from "../api";
 import { ApiErrorNotice, Checkbox, Loading, Spinner } from "../components/Common";
 import {
+  DownloadModePicker,
   LanguageFallbackSwitch,
   LanguagePicker,
   PlatformPicker,
@@ -96,6 +97,7 @@ function SettingsForm({
 
   const dirty = JSON.stringify(form) !== JSON.stringify(initial);
   const valid =
+    form.download_mode !== "" &&
     form.platforms.length > 0 &&
     form.languages.length > 0 &&
     form.max_concurrent_downloads >= 1 &&
@@ -158,6 +160,16 @@ function SettingsForm({
   return (
     <>
       <div>
+        <section className="form-section">
+          <h2>Games</h2>
+          <DownloadModePicker value={form.download_mode} onChange={(v) => set("download_mode", v)} disabled={busy} />
+          {form.download_mode === "selected" && (
+            <span className="hint">
+              Pick games in the <Link to="/library">library</Link>. Switching to this mode keeps only selected games;
+              you will be asked what to do with files of games that are not selected.
+            </span>
+          )}
+        </section>
         <section className="form-section">
           <h2>Platforms</h2>
           <PlatformPicker value={form.platforms} onChange={(v) => set("platforms", v)} disabled={busy} />

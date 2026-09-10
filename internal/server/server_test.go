@@ -46,6 +46,8 @@ func newTestServer(t *testing.T) (*httptest.Server, *db.DB) {
 	paths := library.Paths{Root: filepath.Join(dir, "lib")}
 	syncer := library.NewSyncer(d, m, paths, log)
 	dl := downloader.New(d, m, paths, log)
+	syncer.OnChange = dl.Wake
+	syncer.OnDrop = dl.Cancel
 	sched := scheduler.New(d, m, syncer, log, 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -92,10 +94,25 @@ func TestSetupFlowAndSettings(t *testing.T) {
 		t.Fatalf("auth: %d %v", code, out)
 	}
 	_, st = call(t, srv, "GET", "/api/status", nil)
-	if st["setup_step"] != "platforms" {
+	if st["setup_step"] != "games" {
 		t.Errorf("step after auth = %v", st["setup_step"])
 	}
 	_, settings := call(t, srv, "GET", "/api/settings", nil)
+	if settings["download_mode"] != "" {
+		t.Errorf("download mode should be unset before the wizard asked: %v", settings["download_mode"])
+	}
+	settings["download_mode"] = "bogus"
+	if code, _ := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings}); code != 400 {
+		t.Errorf("bogus download mode should be rejected, got %d", code)
+	}
+	settings["download_mode"] = "all"
+	if code, out := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings}); code != 200 {
+		t.Fatalf("save download mode: %d %v", code, out)
+	}
+	_, st = call(t, srv, "GET", "/api/status", nil)
+	if st["setup_step"] != "platforms" {
+		t.Errorf("step after download mode = %v", st["setup_step"])
+	}
 	settings["platforms"] = []string{"windows", "linux"}
 	if code, out := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings, "on_removed": nil}); code != 200 {
 		t.Fatalf("save platforms: %d %v", code, out)
@@ -180,5 +197,223 @@ func TestSetupFlowAndSettings(t *testing.T) {
 	_, st = call(t, srv, "GET", "/api/status", nil)
 	if st["authenticated"] != false {
 		t.Errorf("should be logged out: %v", st)
+	}
+}
+
+// waitGames polls until at least n games are listed.
+func waitGames(t *testing.T, srv *httptest.Server, n int) []any {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var games []any
+	for time.Now().Before(deadline) {
+		_, out := call(t, srv, "GET", "/api/games", nil)
+		games, _ = out["games"].([]any)
+		if len(games) >= n {
+			return games
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("expected %d games, got %d", n, len(games))
+	return nil
+}
+
+func waitSyncIdle(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		_, st := call(t, srv, "GET", "/api/status", nil)
+		sync := st["sync"].(map[string]any)
+		if sync["running"] == false && sync["last_finished_at"] != nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("sync did not finish")
+}
+
+func gameByID(t *testing.T, srv *httptest.Server, id string) map[string]any {
+	t.Helper()
+	code, detail := call(t, srv, "GET", "/api/games/"+id, nil)
+	if code != 200 {
+		t.Fatalf("game %s: %d %v", id, code, detail)
+	}
+	return detail
+}
+
+func TestSelectedModeDownloadsOnlySelectedGames(t *testing.T) {
+	srv, d := newTestServer(t)
+	ctx := context.Background()
+
+	if code, _ := call(t, srv, "POST", "/api/auth/code", map[string]string{"code": "abc"}); code != 200 {
+		t.Fatal("auth failed")
+	}
+	_, settings := call(t, srv, "GET", "/api/settings", nil)
+	settings["download_mode"] = "selected"
+	settings["platforms"] = []string{"windows"}
+	settings["content_chosen"] = true
+	if code, out := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings}); code != 200 {
+		t.Fatalf("save settings: %d %v", code, out)
+	}
+	if code, out := call(t, srv, "POST", "/api/setup/complete", nil); code != 200 {
+		t.Fatalf("complete: %d %v", code, out)
+	}
+	games := waitGames(t, srv, 10)
+	waitSyncIdle(t, srv)
+
+	// Nothing is selected by default, so nothing is planned or queued.
+	for _, g := range games {
+		gm := g.(map[string]any)
+		if gm["status"] != "unselected" || gm["selected"] != false || gm["files_total"].(float64) != 0 {
+			t.Errorf("game should be unselected with no files: %v", gm)
+		}
+	}
+	_, st := call(t, srv, "GET", "/api/status", nil)
+	lib := st["library"].(map[string]any)
+	if lib["download_mode"] != "selected" || lib["unselected"].(float64) != float64(len(games)) {
+		t.Errorf("status library: %v", lib)
+	}
+	if _, dls := call(t, srv, "GET", "/api/downloads", nil); dls["queued_total"].(float64) != 0 {
+		t.Errorf("nothing should be queued: %v", dls)
+	}
+	// The status filter knows the new state.
+	if _, out := call(t, srv, "GET", "/api/games?status=unselected", nil); len(out["games"].([]any)) != len(games) {
+		t.Errorf("filter by unselected: %v", out)
+	}
+
+	// Selecting a game fetches its details and queues its files.
+	const witcher = "1207658924"
+	if code, out := call(t, srv, "PUT", "/api/games/selection", map[string]any{"ids": []int64{1207658924}, "selected": true}); code != 200 {
+		t.Fatalf("select: %d %v", code, out)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	var detail map[string]any
+	for time.Now().Before(deadline) {
+		detail = gameByID(t, srv, witcher)
+		if detail["game"].(map[string]any)["files_total"].(float64) > 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	game := detail["game"].(map[string]any)
+	if game["selected"] != true || game["status"] != "pending" || game["files_total"].(float64) != 3 {
+		t.Fatalf("selected game should have its windows/en files pending: %v", game)
+	}
+	if _, dls := call(t, srv, "GET", "/api/downloads", nil); dls["queued_total"].(float64) != 3 {
+		t.Errorf("queue should hold the selected game's files: %v", dls)
+	}
+	// Other games stay untouched.
+	if g := gameByID(t, srv, "1207664663")["game"].(map[string]any); g["status"] != "unselected" {
+		t.Errorf("unselected game changed: %v", g)
+	}
+
+	// Deselecting with nothing downloaded needs no confirmation and forgets the files.
+	if code, out := call(t, srv, "PUT", "/api/games/selection", map[string]any{"ids": []int64{1207658924}, "selected": false}); code != 200 {
+		t.Fatalf("deselect: %d %v", code, out)
+	}
+	game = gameByID(t, srv, witcher)["game"].(map[string]any)
+	if game["status"] != "unselected" || game["files_total"].(float64) != 0 {
+		t.Errorf("deselected game should have no files: %v", game)
+	}
+
+	// Select again, pretend one file finished, then deselecting asks what to do with it.
+	if code, _ := call(t, srv, "PUT", "/api/games/selection", map[string]any{"ids": []int64{1207658924}, "selected": true}); code != 200 {
+		t.Fatal("re-select failed")
+	}
+	var files []db.File
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		files, _ = d.ListActiveFilesByGame(ctx, 1207658924)
+		if len(files) == 3 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if len(files) != 3 {
+		t.Fatalf("files after re-select = %d", len(files))
+	}
+	if err := d.SetFileDone(ctx, files[0].ID, "The Witcher/windows/setup.exe", files[0].Size); err != nil {
+		t.Fatal(err)
+	}
+	code, out := call(t, srv, "PUT", "/api/games/selection", map[string]any{"ids": []int64{1207658924}, "selected": false})
+	if code != 409 || out["error"] != "confirmation_required" {
+		t.Fatalf("deselect with a downloaded file should ask: %d %v", code, out)
+	}
+	if reasons := out["reasons"].([]any); len(reasons) != 1 || reasons[0] != "unselected" {
+		t.Errorf("reasons = %v", reasons)
+	}
+	if removed := out["removed"].(map[string]any); removed["downloaded_files"].(float64) != 1 || removed["files"].(float64) != 3 {
+		t.Errorf("removed = %v", removed)
+	}
+	if g := gameByID(t, srv, witcher)["game"].(map[string]any); g["selected"] != true {
+		t.Errorf("refused deselect must not change the selection: %v", g)
+	}
+	if code, out := call(t, srv, "PUT", "/api/games/selection", map[string]any{"ids": []int64{1207658924}, "selected": false, "on_removed": "keep"}); code != 200 {
+		t.Fatalf("deselect keep: %d %v", code, out)
+	}
+	kept, _ := d.GetFile(ctx, files[0].ID)
+	if kept == nil || kept.Active || kept.Status != db.StatusInactive {
+		t.Errorf("kept file should be inactive: %+v", kept)
+	}
+	if rest, _ := d.ListActiveFilesByGame(ctx, 1207658924); len(rest) != 0 {
+		t.Errorf("pending files should be forgotten: %d left", len(rest))
+	}
+	if code, _ := call(t, srv, "PUT", "/api/games/selection", map[string]any{"ids": []int64{999}, "selected": true}); code != 404 {
+		t.Errorf("unknown game should be 404, got %d", code)
+	}
+
+	// Switching to "all" needs no confirmation; the next sync plans everything.
+	_, settings = call(t, srv, "GET", "/api/settings", nil)
+	settings["download_mode"] = "all"
+	if code, out := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings}); code != 200 {
+		t.Fatalf("switch to all: %d %v", code, out)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		_, out := call(t, srv, "GET", "/api/games?status=unselected", nil)
+		if len(out["games"].([]any)) == 0 {
+			if g := gameByID(t, srv, "1207664663")["game"].(map[string]any); g["files_total"].(float64) > 0 {
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if g := gameByID(t, srv, "1207664663")["game"].(map[string]any); g["status"] != "pending" {
+		t.Errorf("in all mode every game gets planned: %v", g)
+	}
+	// And back to "selected": the previously pending files are dropped, downloaded
+	// ones would need confirmation.
+	waitSyncIdle(t, srv)
+	_, prev := call(t, srv, "POST", "/api/settings/preview", func() map[string]any { settings["download_mode"] = "selected"; return settings }())
+	if prev["needs_confirmation"] != false || prev["removed"].(map[string]any)["files"].(float64) == 0 {
+		t.Errorf("preview of switching back: %v", prev)
+	}
+	if reasons := prev["reasons"].([]any); len(reasons) != 1 || reasons[0] != "unselected" {
+		t.Errorf("preview reasons = %v", reasons)
+	}
+}
+
+func TestExistingInstallKeepsDownloadingEverything(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "old.db")
+	d, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	s := db.DefaultSettings()
+	s.Platforms = []string{"windows"}
+	s.ContentChosen = true
+	_ = d.SaveSettings(ctx, s)
+	_ = d.SetSetupComplete(ctx, true)
+	d.Close()
+
+	d, err = db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	got, _ := d.GetSettings(ctx)
+	if got.DownloadMode != db.DownloadAll {
+		t.Errorf("finished setups without a mode must default to all, got %q", got.DownloadMode)
 	}
 }

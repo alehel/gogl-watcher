@@ -14,7 +14,9 @@ import { ApiErrorNotice, EmptyState, Loading, Spinner, TimeAgo } from "../compon
 import { DataTable } from "../components/DataTable";
 import { IconBack } from "../components/Icons";
 import { ProgressBar } from "../components/ProgressBar";
+import { useGameSelection } from "../components/Selection";
 import { FileStatusDot, GameStatusDot, gameStatusTone } from "../components/StatusDot";
+import { useStatus } from "../components/StatusContext";
 import { useToast } from "../components/Toast";
 import { formatBytes, formatRelative, formatSpeed, platformLabel, platformsText, plural, ratio } from "../format";
 import { useAction, useNow, usePolling } from "../hooks";
@@ -22,12 +24,18 @@ import { useAction, useNow, usePolling } from "../hooks";
 export function GamePage() {
   const { id = "" } = useParams();
   const toast = useToast();
+  const { status, refresh: refreshStatus } = useStatus();
   const game = usePolling(() => getGame(id), 2000, [id]);
   const [broken, setBroken] = useState(false);
   const now = useNow();
 
   const sync = useAction(() => syncGame(id));
   const retry = useAction(() => retryGame(id));
+  const selection = useGameSelection(() => {
+    game.refresh();
+    refreshStatus();
+  });
+  const selectedOnly = status?.library.download_mode === "selected";
 
   const back = (
     <Link to="/library" className="back">
@@ -60,15 +68,20 @@ export function GamePage() {
   }
 
   const { game: g, products } = game.data;
+  const unselected = g.status === "unselected";
   const hasErrors = products.some((p) => p.files.some((f) => f.status === "error"));
   const sorted = [...products].sort((a, b) => Number(a.is_dlc) - Number(b.is_dlc) || a.title.localeCompare(b.title));
   const showImg = !!g.image && !broken;
 
   const meta = [
     platformsText(g.works_on, true) || null,
-    plural(g.files_total, "file"),
-    formatBytes(g.bytes_total),
-    g.last_synced_at ? `synced ${formatRelative(g.last_synced_at, now)}` : "never synced",
+    ...(unselected
+      ? []
+      : [
+          plural(g.files_total, "file"),
+          formatBytes(g.bytes_total),
+          g.last_synced_at ? `synced ${formatRelative(g.last_synced_at, now)}` : "never synced",
+        ]),
   ].filter(Boolean);
 
   const doSync = async () => {
@@ -94,6 +107,7 @@ export function GamePage() {
     <div className="stack">
       <div>{back}</div>
       <ApiErrorNotice error={game.error} stale />
+      {selection.modal}
 
       <div className="game-head">
         <div className="game-cover">
@@ -109,9 +123,29 @@ export function GamePage() {
             <ProgressBar line value={g.progress} tone={gameStatusTone(g.status)} label="Overall progress" />
           )}
           <div className="btn-row">
-            <button className="btn" onClick={doSync} disabled={sync.pending}>
-              {sync.pending && <Spinner />} Re-check on GOG
-            </button>
+            {selectedOnly &&
+              (g.selected ? (
+                <button
+                  className="btn"
+                  onClick={() => void selection.setSelection([g.id], false)}
+                  disabled={selection.busy}
+                >
+                  {selection.busy && <Spinner />} Remove from selection
+                </button>
+              ) : (
+                <button
+                  className="btn primary"
+                  onClick={() => void selection.setSelection([g.id], true)}
+                  disabled={selection.busy}
+                >
+                  {selection.busy && <Spinner />} Select for download
+                </button>
+              ))}
+            {!unselected && (
+              <button className="btn" onClick={doSync} disabled={sync.pending}>
+                {sync.pending && <Spinner />} Re-check on GOG
+              </button>
+            )}
             {hasErrors && (
               <button className="btn danger" onClick={doRetry} disabled={retry.pending}>
                 {retry.pending && <Spinner />} Retry failed
@@ -121,7 +155,13 @@ export function GamePage() {
         </div>
       </div>
 
-      {sorted.length === 0 ? (
+      {unselected ? (
+        <EmptyState>
+          This game is not selected for download. Select it to fetch its installers
+          {products.some((p) => p.files.length > 0) ? "; files kept from before are listed below as inactive." : "."}
+        </EmptyState>
+      ) : null}
+      {unselected && !products.some((p) => p.files.length > 0) ? null : sorted.length === 0 ? (
         <EmptyState>
           {g.status === "unsynced"
             ? "Details for this game have not been fetched yet. Use “Re-check on GOG” to fetch them now."

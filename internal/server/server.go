@@ -55,6 +55,7 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, 200, map[string]any{"languages": Languages})
 	})
 	mux.HandleFunc("GET /api/games", s.handleGames)
+	mux.HandleFunc("PUT /api/games/selection", s.handleGamesSelection)
 	mux.HandleFunc("GET /api/games/{id}", s.handleGame)
 	mux.HandleFunc("POST /api/games/{id}/sync", s.handleGameSync)
 	mux.HandleFunc("POST /api/games/{id}/retry", s.handleGameRetry)
@@ -95,6 +96,8 @@ func (s *Server) setupStep(ctx context.Context) (string, bool, db.Settings) {
 		return "done", true, settings
 	case !s.GOG.Authenticated():
 		return "auth", false, settings
+	case settings.DownloadMode == "":
+		return "games", false, settings
 	case len(settings.Platforms) == 0:
 		return "platforms", false, settings
 	case !settings.ContentChosen:
@@ -114,6 +117,7 @@ type gameSummary struct {
 	Folder       string          `json:"folder"`
 	WorksOn      map[string]bool `json:"works_on"`
 	Owned        bool            `json:"owned"`
+	Selected     bool            `json:"selected"`
 	Status       string          `json:"status"`
 	FilesTotal   int             `json:"files_total"`
 	FilesDone    int             `json:"files_done"`
@@ -125,17 +129,19 @@ type gameSummary struct {
 	DetailsError string          `json:"details_error,omitempty"`
 }
 
-func (s *Server) summarize(g db.Game, st db.GameStats, active map[int64][]downloader.Progress) gameSummary {
+func (s *Server) summarize(g db.Game, st db.GameStats, active map[int64][]downloader.Progress, settings db.Settings) gameSummary {
 	out := gameSummary{
 		ID: g.ID, Title: g.Title, Slug: g.Slug, Image: g.Image, Folder: g.Folder,
 		WorksOn: map[string]bool{"windows": g.WorksWindows, "mac": g.WorksMac, "linux": g.WorksLinux},
-		Owned:   g.Owned, FilesTotal: st.FilesTotal, FilesDone: st.FilesDone, BytesTotal: st.BytesTotal, BytesDone: st.BytesDone,
+		Owned:   g.Owned, Selected: g.Selected, FilesTotal: st.FilesTotal, FilesDone: st.FilesDone, BytesTotal: st.BytesTotal, BytesDone: st.BytesDone,
 		LastSyncedAt: g.DetailsSyncedAt, UpdatedAt: g.UpdatedAt, DetailsError: g.DetailsError,
 	}
 	for _, p := range active[g.ID] {
 		out.BytesDone += p.Downloaded
 	}
 	switch {
+	case !settings.WantsGame(g):
+		out.Status = "unselected"
 	case g.DetailsSyncedAt == nil:
 		out.Status = "unsynced"
 	case st.FilesTotal == 0:
@@ -179,20 +185,24 @@ func (s *Server) allSummaries(ctx context.Context) ([]gameSummary, error) {
 	if err != nil {
 		return nil, err
 	}
+	settings, err := s.DB.GetSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
 	active := s.activeByGame()
 	out := make([]gameSummary, 0, len(games))
 	for _, g := range games {
 		if !g.Owned {
 			continue
 		}
-		out = append(out, s.summarize(g, stats[g.ID], active))
+		out = append(out, s.summarize(g, stats[g.ID], active, settings))
 	}
 	return out, nil
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	step, complete, _ := s.setupStep(ctx)
+	step, complete, settings := s.setupStep(ctx)
 	sums, err := s.allSummaries(ctx)
 	if err != nil {
 		writeError(w, 500, err.Error())
@@ -207,9 +217,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		bytesDone += g.BytesDone
 	}
 	lib["games"] = len(sums)
-	for _, k := range []string{"complete", "pending", "downloading", "partial", "error", "unavailable", "unsynced"} {
+	for _, k := range []string{"complete", "pending", "downloading", "partial", "error", "unavailable", "unsynced", "unselected"} {
 		lib[k] = counts[k]
 	}
+	lib["download_mode"] = settings.DownloadMode
 	lib["bytes_total"] = bytesTotal
 	lib["bytes_done"] = bytesDone
 
@@ -317,6 +328,9 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 	case !s.GOG.Authenticated():
 		writeError(w, 409, "authorize with GOG first")
 		return
+	case settings.DownloadMode == "":
+		writeError(w, 409, "choose whether to download all games or only selected ones")
+		return
 	case len(settings.Platforms) == 0:
 		writeError(w, 409, "choose at least one platform")
 		return
@@ -328,7 +342,7 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
-	s.Log.Info("setup completed", "platforms", strings.Join(settings.Platforms, ","), "dlc", settings.IncludeDLC, "extras", settings.IncludeExtras)
+	s.Log.Info("setup completed", "mode", settings.DownloadMode, "platforms", strings.Join(settings.Platforms, ","), "dlc", settings.IncludeDLC, "extras", settings.IncludeExtras)
 	s.Downloads.Configure(settings, true)
 	s.Scheduler.TriggerNow()
 	writeJSON(w, 200, map[string]bool{"ok": true})
@@ -384,6 +398,10 @@ func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "choose at least one platform")
 		return
 	}
+	if done && ns.DownloadMode == "" {
+		writeError(w, 400, "choose whether to download all games or only selected ones")
+		return
+	}
 	onRemoved := ""
 	if body.OnRemoved != nil {
 		onRemoved = *body.OnRemoved
@@ -398,7 +416,7 @@ func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
-	s.Log.Info("settings saved", "platforms", strings.Join(ns.Platforms, ","), "languages", strings.Join(ns.Languages, ","),
+	s.Log.Info("settings saved", "mode", ns.DownloadMode, "platforms", strings.Join(ns.Platforms, ","), "languages", strings.Join(ns.Languages, ","),
 		"dlc", ns.IncludeDLC, "extras", ns.IncludeExtras, "concurrent", ns.MaxConcurrentDownloads,
 		"speed_limit_kbps", ns.SpeedLimitKBps, "interval_hours", ns.CheckIntervalHours)
 	s.Downloads.Configure(ns, done)
@@ -409,7 +427,8 @@ func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 }
 
 func planningChanged(a, b db.Settings) bool {
-	return strings.Join(a.Platforms, ",") != strings.Join(b.Platforms, ",") ||
+	return a.DownloadMode != b.DownloadMode ||
+		strings.Join(a.Platforms, ",") != strings.Join(b.Platforms, ",") ||
 		strings.Join(a.Languages, ",") != strings.Join(b.Languages, ",") ||
 		a.LanguageFallback != b.LanguageFallback || a.IncludeDLC != b.IncludeDLC || a.IncludeExtras != b.IncludeExtras
 }
@@ -436,7 +455,7 @@ func (s *Server) handleGames(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.URL.Query().Get("sort") {
 	case "status":
-		order := map[string]int{"error": 0, "downloading": 1, "partial": 2, "pending": 3, "unsynced": 4, "complete": 5, "unavailable": 6}
+		order := map[string]int{"error": 0, "downloading": 1, "partial": 2, "pending": 3, "unsynced": 4, "complete": 5, "unavailable": 6, "unselected": 7}
 		sort.SliceStable(filtered, func(i, j int) bool { return order[filtered[i].Status] < order[filtered[j].Status] })
 	case "updated":
 		sort.SliceStable(filtered, func(i, j int) bool { return filtered[i].UpdatedAt.After(filtered[j].UpdatedAt) })
@@ -490,8 +509,9 @@ func (s *Server) handleGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stats, _ := s.DB.GameStatsAll(ctx)
+	settings, _ := s.DB.GetSettings(ctx)
 	active := s.activeByGame()
-	summary := s.summarize(*g, stats[id], active)
+	summary := s.summarize(*g, stats[id], active, settings)
 	products, err := s.DB.ListProducts(ctx, id)
 	if err != nil {
 		writeError(w, 500, err.Error())
@@ -537,6 +557,67 @@ func (s *Server) handleGame(w http.ResponseWriter, r *http.Request) {
 		out = append(out, productOut{ID: p.ID, Title: p.Title, IsDLC: p.IsDLC, Files: fs})
 	}
 	writeJSON(w, 200, map[string]any{"game": summary, "products": out})
+}
+
+// handleGamesSelection marks games as selected for download or not. Selected games
+// are synced in the background so their files get planned and queued.
+func (s *Server) handleGamesSelection(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var body struct {
+		IDs       []int64 `json:"ids"`
+		Selected  bool    `json:"selected"`
+		OnRemoved *string `json:"on_removed"`
+	}
+	if err := readJSON(w, r, &body); err != nil {
+		writeError(w, 400, "invalid request: "+err.Error())
+		return
+	}
+	if len(body.IDs) == 0 {
+		writeError(w, 400, "provide at least one game id")
+		return
+	}
+	for _, id := range body.IDs {
+		g, err := s.DB.GetGame(ctx, id)
+		if err != nil {
+			writeError(w, 500, err.Error())
+			return
+		}
+		if g == nil {
+			writeError(w, 404, fmt.Sprintf("game %d not found", id))
+			return
+		}
+	}
+	onRemoved := ""
+	if body.OnRemoved != nil {
+		onRemoved = *body.OnRemoved
+	}
+	if err := s.Syncer.SetSelection(ctx, body.IDs, body.Selected, onRemoved); err != nil {
+		var cr *library.ErrConfirmationRequired
+		if errors.As(err, &cr) {
+			writeJSON(w, 409, map[string]any{"error": "confirmation_required", "needs_confirmation": true,
+				"removed": cr.Preview.Removed, "reasons": cr.Preview.Reasons})
+			return
+		}
+		writeError(w, 500, err.Error())
+		return
+	}
+	settings, _ := s.DB.GetSettings(ctx)
+	done, _ := s.DB.SetupComplete(ctx)
+	if body.Selected && done && settings.SelectedOnly() && s.GOG.Authenticated() {
+		ids := append([]int64(nil), body.IDs...)
+		go func() {
+			for _, id := range ids {
+				sctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				err := s.Syncer.SyncGame(sctx, id)
+				cancel()
+				if err != nil {
+					s.Log.Warn("could not sync selected game", "game_id", id, "error", err)
+				}
+			}
+			s.Downloads.Wake()
+		}()
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "selected": body.Selected, "ids": body.IDs})
 }
 
 func (s *Server) handleGameSync(w http.ResponseWriter, r *http.Request) {

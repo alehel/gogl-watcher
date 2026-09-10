@@ -35,6 +35,9 @@ type Syncer struct {
 	paths Paths
 	// OnChange is called whenever files may have become downloadable.
 	OnChange func()
+	// OnDrop is called before a tracked file is forgotten, so a running transfer
+	// of it can be aborted.
+	OnDrop func(fileID int64)
 
 	mu      sync.Mutex
 	status  Status
@@ -273,6 +276,12 @@ func (s *Syncer) syncGame(ctx context.Context, id int64, owned gog.OwnedSet, set
 	}
 	if game == nil {
 		return fmt.Errorf("game %d not in library", id)
+	}
+	if !settings.WantsGame(*game) {
+		// Not selected for download: leave GOG alone and plan nothing. Its files were
+		// already dropped when it was deselected (or when the download mode changed).
+		s.log.Debug("game not selected, skipped", "game", game.Title)
+		return nil
 	}
 	p, err := s.gog.ProductDetails(ctx, id)
 	if err != nil {

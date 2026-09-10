@@ -88,6 +88,7 @@ func run() error {
 	syncer := library.NewSyncer(database, api, paths, log)
 	dl := downloader.New(database, api, paths, log)
 	syncer.OnChange = dl.Wake
+	syncer.OnDrop = dl.Cancel
 	sched := scheduler.New(database, api, syncer, log, time.Duration(cfg.StartupSyncDelaySeconds)*time.Second)
 
 	settings, err := database.GetSettings(ctx)
