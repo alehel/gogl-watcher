@@ -269,12 +269,55 @@ func sampleProduct(id int64, title, slug string, installers []sampleInstaller, e
 	return p
 }
 
+// MockCover renders a simple 2:3 SVG cover for a title as a data URI so the UI can
+// show artwork without network access.
+func MockCover(title string) string {
+	var h uint32 = 2166136261
+	for i := 0; i < len(title); i++ {
+		h = (h ^ uint32(title[i])) * 16777619
+	}
+	hue := int(h % 360)
+	words := strings.Fields(title)
+	var lines []string
+	cur := ""
+	for _, w := range words {
+		if cur != "" && len(cur)+1+len(w) > 16 {
+			lines = append(lines, cur)
+			cur = w
+			continue
+		}
+		if cur == "" {
+			cur = w
+		} else {
+			cur += " " + w
+		}
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	if len(lines) > 4 {
+		lines = lines[:4]
+	}
+	var text strings.Builder
+	y := 300 - (len(lines)-1)*17
+	for _, l := range lines {
+		esc := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "'", "&apos;", `"`, "&quot;").Replace(l)
+		fmt.Fprintf(&text, `<text x="24" y="%d" font-family="Helvetica,Arial,sans-serif" font-size="26" font-weight="700" fill="#fff">%s</text>`, y, esc)
+		y += 34
+	}
+	svg := fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" viewBox="0 0 300 450">`+
+		`<rect width="300" height="450" fill="hsl(%d,35%%,22%%)"/>`+
+		`<circle cx="230" cy="110" r="140" fill="hsl(%d,45%%,32%%)"/>`+
+		`<rect y="250" width="300" height="200" fill="rgba(0,0,0,0.35)"/>%s</svg>`, hue, (hue+40)%360, text.String())
+	return "data:image/svg+xml;charset=utf-8," + url.PathEscape(svg)
+}
+
 // SampleLibrary returns the demo library.
 func SampleLibrary() []MockGame {
 	mk := func(id int64, title, slug string, win, mac, lin bool, p Product, dlcs ...Product) MockGame {
 		p.ExpandedDLCs = dlcs
 		return MockGame{
-			Listed:  ListedGame{ID: id, Title: title, Slug: slug, Image: "", WorksWindows: win, WorksMac: mac, WorksLinux: lin},
+			Listed:  ListedGame{ID: id, Title: title, Slug: slug, Image: MockCover(title), WorksWindows: win, WorksMac: mac, WorksLinux: lin},
 			Product: p,
 		}
 	}
