@@ -91,6 +91,21 @@ The container restarts automatically after a reboot (`restart: unless-stopped`) 
 its health through `GET /api/status`, so Docker marks it unhealthy if the process stops
 answering.
 
+### Using the published image
+
+Every release is published to GitHub Container Registry as
+`ghcr.io/alehel/gogl-watcher` for `linux/amd64` and `linux/arm64`. The compose file already
+uses that image name, so you can skip building and pull a release instead:
+
+```bash
+VERSION=1.2.3 docker compose pull   # or leave VERSION unset for :latest
+VERSION=1.2.3 docker compose up -d  # without --build, so the pulled image is used
+```
+
+Tags follow the release version: `1.2.3`, `1.2`, `1` and `latest` all point at the newest
+release in that range. Pre-releases (for example `1.3.0-rc.1`) only get their exact tag and
+never move `latest`.
+
 ### Volumes and permissions
 
 - **`/data`** holds the SQLite database: your settings, the record of every file and its
@@ -154,6 +169,21 @@ make build
 ```
 
 `make docker` builds the same image the compose file builds.
+
+### Releasing
+
+Releases are cut by tagging a commit on `main`:
+
+```bash
+git checkout main && git pull
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+The `Release` workflow (`.github/workflows/release.yml`) refuses tags whose commit is not on
+`main`, runs the test suite, builds the multi-arch image with the tag as the embedded version,
+pushes it to `ghcr.io/alehel/gogl-watcher` and creates a GitHub release with generated notes.
+A tag containing a hyphen (`v1.3.0-rc.1`) is published as a pre-release.
 
 ## Notes and limitations
 
