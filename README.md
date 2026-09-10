@@ -29,6 +29,7 @@ limit bandwidth and concurrency.
 ## Quick start
 
 ```bash
+cp .env.example .env      # optional: port, host paths, UID/GID, timezone
 mkdir -p data library
 docker compose up -d --build
 ```
@@ -50,6 +51,11 @@ only, in that mode).
 
 ### Configuration
 
+Everything about *what* to download (download mode, platforms, languages, DLC/extras,
+concurrency, speed limit, check interval, pause) is configured in the web UI under **Settings**
+and stored in the database; installations set up before the download mode existed keep
+downloading everything. The environment only controls *where* and *how* the process runs:
+
 | Variable | Default | Description |
 | --- | --- | --- |
 | `DATA_DIR` | `/data` | SQLite database (settings, tokens, file state, logs) |
@@ -59,12 +65,80 @@ only, in that mode).
 | `STARTUP_SYNC_DELAY_SECONDS` | `15` | Delay before the first scheduled check after boot |
 | `MOCK_GOG` | unset | Set to `1` to run against a fake library (demo mode, no GOG account needed) |
 
-Everything else (download mode, platforms, languages, DLC/extras, concurrency, speed limit,
-check interval, pause) is configured in the UI under **Settings** and stored in the database.
-Installations set up before the download mode existed keep downloading everything.
+## Running with Docker Compose
 
-The container runs as UID/GID 1000; make sure the mounted `data` and `library` directories are
-writable by that user (or run with `user: "<uid>:<gid>"` in the compose file).
+The repository ships a `docker-compose.yml` that builds the image from source and runs it
+as a long-lived service. Host-side settings are read from a `.env` file next to it; copy
+`.env.example` to `.env` and edit what you need. Every value is optional.
+
+| `.env` variable | Default | Description |
+| --- | --- | --- |
+| `PORT` | `8080` | Host port the web UI is published on |
+| `DATA_DIR` | `./data` | Host directory mounted at `/data` (database, settings, GOG refresh token) |
+| `LIBRARY_DIR` | `./library` | Host directory mounted at `/library` (downloaded installers) |
+| `PUID` / `PGID` | `1000` / `1000` | User and group the container runs as |
+| `TZ` | `UTC` | Timezone used for log timestamps |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `MOCK_GOG` | `0` | `1` runs the demo library instead of talking to GOG |
+| `VERSION` | `dev` | Version string stamped into the binary and used as the image tag |
+
+### Start, stop, update
+
+```bash
+cp .env.example .env            # first time only
+mkdir -p data library           # or whatever DATA_DIR / LIBRARY_DIR point to
+docker compose up -d --build    # build the image and start the service
+docker compose logs -f          # follow the log
+docker compose ps               # shows the health state (healthy after ~10 s)
+docker compose down             # stop; data and library stay on disk
+```
+
+To update, pull the new source and rebuild: `git pull && docker compose up -d --build`.
+The container restarts automatically after a reboot (`restart: unless-stopped`) and reports
+its health through `GET /api/status`, so Docker marks it unhealthy if the process stops
+answering.
+
+### Using the published image
+
+Every release is published to GitHub Container Registry as
+`ghcr.io/alehel/gogl-watcher` for `linux/amd64` and `linux/arm64`. The compose file already
+uses that image name, so you can skip building and pull a release instead:
+
+```bash
+VERSION=1.2.3 docker compose pull   # or leave VERSION unset for :latest
+VERSION=1.2.3 docker compose up -d  # without --build, so the pulled image is used
+```
+
+Tags follow the release version: `1.2.3`, `1.2`, `1` and `latest` all point at the newest
+release in that range. Pre-releases (for example `1.3.0-rc.1`) only get their exact tag and
+never move `latest`.
+
+### Volumes and permissions
+
+- **`/data`** holds the SQLite database: your settings, the record of every file and its
+  version, the logs shown in the UI, and the GOG refresh token. Back this directory up and
+  treat it as secret; anyone with the token can act as your GOG account until you disconnect
+  in Settings.
+- **`/library`** holds the installers, one folder per game. It is safe to read from, copy or
+  serve from the host while the service runs; the app writes new files as `<name>.part` and
+  renames them only after the size and checksum have been verified.
+
+The container runs as `PUID:PGID` (default `1000:1000`), so the mounted directories must be
+writable by that user. Set `PUID` and `PGID` to the owner of your library directory
+(`id -u` / `id -g` on the host) and the downloaded files will be owned by that account.
+
+### Trying it without a GOG account
+
+Set `MOCK_GOG=1` in `.env` and start the stack. The wizard accepts any text as the login
+code, the library is filled with sample games, and downloads stream fake data at a few
+megabytes per second so every screen can be explored. Point `DATA_DIR` and `LIBRARY_DIR` at
+throwaway directories, then set `MOCK_GOG=0` and recreate the container for real use.
+
+### Reverse proxies
+
+The UI and API live on one port with no built-in authentication. Keep it on a private
+network or put it behind a reverse proxy that handles login (for example Caddy, nginx or
+Traefik with forward auth) before exposing it beyond your LAN.
 
 ## How it works
 
@@ -102,7 +176,22 @@ make mock
 make build
 ```
 
-`make docker` builds the image; `docker compose up` does the same via the `build:` key.
+`make docker` builds the same image the compose file builds.
+
+### Releasing
+
+Releases are cut by tagging a commit on `main`:
+
+```bash
+git checkout main && git pull
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+The `Release` workflow (`.github/workflows/release.yml`) refuses tags whose commit is not on
+`main`, runs the test suite, builds the multi-arch image with the tag as the embedded version,
+pushes it to `ghcr.io/alehel/gogl-watcher` and creates a GitHub release with generated notes.
+A tag containing a hyphen (`v1.3.0-rc.1`) is published as a pre-release.
 
 ## Notes and limitations
 
