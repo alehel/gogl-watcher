@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   ApiError,
@@ -86,14 +86,16 @@ function SettingsForm({
   const [confirm, setConfirm] = useState<SettingsPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const n = Number(mbps);
-    if (Number.isFinite(n) && n >= 0) {
-      setForm((f) => ({ ...f, speed_limit_kbps: mbpsToKbps(n) }));
-    }
-  }, [mbps]);
-
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) => setForm((f) => ({ ...f, [key]: value }));
+
+  // The stored value is only rewritten when the user edits the field: the MB/s
+  // display is rounded, so echoing it back on mount would make an untouched form
+  // dirty (and change the stored limit) whenever the value was not set via this UI.
+  const setSpeed = (value: string) => {
+    setMbps(value);
+    const n = Number(value);
+    if (value.trim() !== "" && Number.isFinite(n) && n >= 0) set("speed_limit_kbps", mbpsToKbps(n));
+  };
 
   const dirty = JSON.stringify(form) !== JSON.stringify(initial);
   const valid =
@@ -240,7 +242,7 @@ function SettingsForm({
                   min={0}
                   step={0.1}
                   value={mbps}
-                  onChange={(e) => setMbps(e.target.value)}
+                  onChange={(e) => setSpeed(e.target.value)}
                   onBlur={() => setMbps(String(kbpsToMbps(form.speed_limit_kbps)))}
                   disabled={busy}
                 />

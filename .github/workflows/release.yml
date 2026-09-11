@@ -108,7 +108,7 @@ jobs:
             ## Docker image
 
             ```
-            docker pull ${{ env.IMAGE }}:${{ github.ref_name }}
+            docker pull ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
             ```
 
             Also tagged as:
