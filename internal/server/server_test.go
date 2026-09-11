@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -563,4 +564,37 @@ func TestLogoutClearsNextRun(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("next_run_at still set after logout")
+}
+
+func TestSortSummariesDownloadedFirst(t *testing.T) {
+	now := time.Now()
+	games := []gameSummary{
+		{Title: "Alpha", Status: "pending", FilesDone: 0, UpdatedAt: now.Add(-3 * time.Hour)},
+		{Title: "Bravo", Status: "complete", FilesDone: 4, UpdatedAt: now.Add(-2 * time.Hour)},
+		{Title: "Charlie", Status: "error", FilesDone: 0, UpdatedAt: now.Add(-1 * time.Hour)},
+		{Title: "Delta", Status: "partial", FilesDone: 1, UpdatedAt: now},
+	}
+	titles := func(in []gameSummary) []string {
+		out := make([]string, len(in))
+		for i, g := range in {
+			out[i] = g.Title
+		}
+		return out
+	}
+	check := func(name string, by string, downloadedFirst bool, want ...string) {
+		t.Helper()
+		list := append([]gameSummary(nil), games...)
+		sortSummaries(list, by, downloadedFirst)
+		if got := titles(list); !slices.Equal(got, want) {
+			t.Errorf("%s = %v, want %v", name, got, want)
+		}
+	}
+	// Without the toggle nothing changes about the existing sorts.
+	check("title", "title", false, "Alpha", "Bravo", "Charlie", "Delta")
+	check("status", "status", false, "Charlie", "Delta", "Alpha", "Bravo")
+	check("updated", "updated", false, "Delta", "Charlie", "Bravo", "Alpha")
+	// With it, downloaded games lead and the chosen sort orders each group.
+	check("title, downloaded first", "title", true, "Bravo", "Delta", "Alpha", "Charlie")
+	check("status, downloaded first", "status", true, "Delta", "Bravo", "Charlie", "Alpha")
+	check("updated, downloaded first", "updated", true, "Delta", "Bravo", "Charlie", "Alpha")
 }

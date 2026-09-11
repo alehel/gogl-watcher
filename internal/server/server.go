@@ -479,14 +479,37 @@ func (s *Server) handleGames(w http.ResponseWriter, r *http.Request) {
 		}
 		filtered = append(filtered, g)
 	}
-	switch r.URL.Query().Get("sort") {
+	sortSummaries(filtered, r.URL.Query().Get("sort"), boolParam(r.URL.Query().Get("downloaded_first")))
+	writeJSON(w, 200, map[string]any{"games": filtered})
+}
+
+// sortSummaries orders the listing in place. The games arrive in title order, so "title"
+// (and any unknown value) leaves them alone; the other sorts are stable on top of it. With
+// downloadedFirst the games that have files on disk are moved to the front, each group
+// keeping the order the chosen sort gave it.
+func sortSummaries(games []gameSummary, by string, downloadedFirst bool) {
+	switch by {
 	case "status":
 		order := map[string]int{"error": 0, "downloading": 1, "partial": 2, "pending": 3, "unsynced": 4, "complete": 5, "unavailable": 6, "unselected": 7}
-		sort.SliceStable(filtered, func(i, j int) bool { return order[filtered[i].Status] < order[filtered[j].Status] })
+		sort.SliceStable(games, func(i, j int) bool { return order[games[i].Status] < order[games[j].Status] })
 	case "updated":
-		sort.SliceStable(filtered, func(i, j int) bool { return filtered[i].UpdatedAt.After(filtered[j].UpdatedAt) })
+		sort.SliceStable(games, func(i, j int) bool { return games[i].UpdatedAt.After(games[j].UpdatedAt) })
 	}
-	writeJSON(w, 200, map[string]any{"games": filtered})
+	if downloadedFirst {
+		sort.SliceStable(games, func(i, j int) bool { return hasDownload(games[i]) && !hasDownload(games[j]) })
+	}
+}
+
+// hasDownload reports whether any wanted file of the game is already on disk.
+func hasDownload(g gameSummary) bool { return g.FilesDone > 0 }
+
+// boolParam reads a query flag written as 1, true or yes.
+func boolParam(v string) bool {
+	switch strings.ToLower(v) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
 }
 
 type fileInfo struct {
