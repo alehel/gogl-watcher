@@ -252,7 +252,7 @@ func (s *Settings) Normalize() error {
 	seen = map[string]bool{}
 	var langs []string
 	for _, l := range s.Languages {
-		l = strings.ToLower(strings.TrimSpace(l))
+		l = NormalizeLanguage(l)
 		if l == "" {
 			continue
 		}
@@ -281,6 +281,22 @@ func (s *Settings) Normalize() error {
 		return fmt.Errorf("download_mode must be %q or %q", DownloadAll, DownloadSelected)
 	}
 	return nil
+}
+
+// NormalizeLanguage brings a language code into the form settings use, so that
+// codes from the picker and codes from GOG's installer manifests compare equal:
+// lower case, no separators ("es_mx" and "es-MX" become "esmx"), and GOG's
+// legacy codes for Greek ("gk") and Serbian ("sb") folded onto "el" and "sr".
+func NormalizeLanguage(code string) string {
+	c := strings.ToLower(strings.TrimSpace(code))
+	c = strings.NewReplacer("-", "", "_", "").Replace(c)
+	switch c {
+	case "gk":
+		return "el"
+	case "sb":
+		return "sr"
+	}
+	return c
 }
 
 // SamePlan reports whether s and o would plan the same files, i.e. differ only
@@ -489,7 +505,8 @@ func (d *DB) GetGame(ctx context.Context, id int64) (*Game, error) {
 	}
 	defer rows.Close()
 	if !rows.Next() {
-		return nil, nil
+		// A failed read must not look like a missing game.
+		return nil, rows.Err()
 	}
 	g, err := scanGame(rows)
 	if err != nil {
@@ -888,7 +905,8 @@ func (d *DB) UpsertDesiredFile(ctx context.Context, f File, localExists func(pat
 	if err != nil {
 		return UpsertFileResult{}, err
 	}
-	changedWhilePending := e.Active && e.Status == StatusPending && (changed || e.Downlink != f.Downlink)
+	// A failed row keeps its partial file too, so a new build must discard it as well.
+	changedWhilePending := e.Active && (e.Status == StatusPending || e.Status == StatusError) && (changed || e.Downlink != f.Downlink)
 	return UpsertFileResult{ID: e.ID, Updated: updated, Changed: changedWhilePending, LocalPath: e.LocalPath}, nil
 }
 
@@ -977,6 +995,15 @@ func (d *DB) SetFileError(ctx context.Context, id int64, msg string, retryAfter 
 	}
 	_, err := d.ExecContext(ctx, `UPDATE files SET status = 'error', error = ?, attempts = attempts + 1, next_attempt_at = 0, updated_at = ? WHERE id = ?`,
 		msg, now.UnixMilli(), id)
+	return err
+}
+
+// DeferFile keeps a pending file queued but not before retryAfter, without
+// counting a failed attempt: for failures of the GOG session rather than the file.
+func (d *DB) DeferFile(ctx context.Context, id int64, msg string, retryAfter time.Duration) error {
+	now := time.Now()
+	_, err := d.ExecContext(ctx, `UPDATE files SET status = 'pending', error = ?, next_attempt_at = ?, updated_at = ? WHERE id = ? AND active = 1`,
+		msg, now.Add(retryAfter).UnixMilli(), now.UnixMilli(), id)
 	return err
 }
 

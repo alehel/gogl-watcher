@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func openTest(t *testing.T) *DB {
@@ -329,5 +330,49 @@ func TestNewVersionSupersedesErrorsAndKeptCopies(t *testing.T) {
 	got, _ := d.GetFile(ctx, re.ID)
 	if !re.Updated || got.Status != StatusPending || got.PreviousPath != "Game/windows/setup_1.1.exe" || !got.Active {
 		t.Errorf("reactivated at a new version: updated=%v %+v", re.Updated, got)
+	}
+}
+
+func TestNormalizeLanguage(t *testing.T) {
+	cases := map[string]string{"en": "en", " EN ": "en", "es_mx": "esmx", "es-MX": "esmx", "esmx": "esmx", "gk": "el", "sb": "sr", "el": "el"}
+	for in, want := range cases {
+		if got := NormalizeLanguage(in); got != want {
+			t.Errorf("NormalizeLanguage(%q) = %q, want %q", in, got, want)
+		}
+	}
+	s := DefaultSettings()
+	s.Languages = []string{"ES_MX", "gk"}
+	if err := s.Normalize(); err != nil || len(s.Languages) != 2 || s.Languages[0] != "esmx" || s.Languages[1] != "el" {
+		t.Errorf("normalized languages = %v (%v)", s.Languages, err)
+	}
+}
+
+// A new build of a file whose last attempt failed must report Changed so the
+// stale partial of the old build is discarded before it is resumed.
+func TestNewBuildOfFailedFileIsReportedAsChanged(t *testing.T) {
+	d := openTest(t)
+	ctx := context.Background()
+	_ = d.UpsertGame(ctx, Game{ID: 1, Title: "Game", Folder: "Game"})
+	_ = d.UpsertProduct(ctx, Product{ID: 1, GameID: 1, Title: "Game"})
+	exists := func(string) bool { return false }
+	f := File{GameID: 1, ProductID: 1, Kind: "extra", GogID: "5001", Name: "Soundtrack", Size: 100, Downlink: "x", RelDir: "extras"}
+	res, _ := d.UpsertDesiredFile(ctx, f, exists)
+	_ = d.SetFileResolved(ctx, res.ID, "soundtrack.zip", "Game/extras/soundtrack.zip", "", 100)
+	_ = d.SetFileError(ctx, res.ID, "stalled", 0)
+	f.Size = 120
+	got, err := d.UpsertDesiredFile(ctx, f, exists)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Changed || got.LocalPath != "Game/extras/soundtrack.zip" {
+		t.Errorf("expected Changed with the old path, got %+v", got)
+	}
+	// Deferring keeps the file queued without using up an attempt.
+	if err := d.DeferFile(ctx, res.ID, "no session", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := d.GetFile(ctx, res.ID)
+	if row.Status != StatusPending || row.Attempts != 0 || row.Error != "no session" || row.NextAttemptAt.Before(time.Now().Add(30*time.Second)) {
+		t.Errorf("deferred file: %+v", row)
 	}
 }
