@@ -61,3 +61,31 @@ func TestHandlerStoresAndQueries(t *testing.T) {
 		t.Errorf("older page = %+v", older)
 	}
 }
+
+func TestQueryEscapesWildcardsAndGroupsQualifyKeys(t *testing.T) {
+	sdb, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "l.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sdb.Close()
+	if _, err := sdb.Exec(`CREATE TABLE logs (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, level TEXT NOT NULL, component TEXT NOT NULL DEFAULT '', message TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(sdb, 100)
+	log := slog.New(NewHandler(slog.NewTextHandler(io.Discard, nil), store, slog.LevelInfo))
+	log.Info("downloading setup_witcher.exe")
+	log.Info("downloading setupXwitcher.exe")
+	log.Info("progress 50% done")
+	log.WithGroup("req").With("component", "http").Info("request", "path", "/x")
+	store.Close()
+	ctx := context.Background()
+	if got, _, _ := store.Query(ctx, "debug", "setup_", 0, 10); len(got) != 1 || got[0].Message != "downloading setup_witcher.exe" {
+		t.Errorf("underscore must be literal: %+v", got)
+	}
+	if got, _, _ := store.Query(ctx, "debug", "50%", 0, 10); len(got) != 1 {
+		t.Errorf("percent must be literal: %+v", got)
+	}
+	if got, _, _ := store.Query(ctx, "debug", "request", 0, 10); len(got) != 1 || got[0].Component != "" || got[0].Message != "request req.component=http req.path=/x" {
+		t.Errorf("grouped attributes: %+v", got)
+	}
+}

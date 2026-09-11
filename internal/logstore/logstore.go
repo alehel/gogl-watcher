@@ -97,8 +97,10 @@ func (s *Store) Query(ctx context.Context, minLevel, q string, beforeID int64, l
 		where = append(where, "level IN ("+strings.Join(ph, ",")+")")
 	}
 	if q != "" {
-		where = append(where, "(message LIKE ? OR component LIKE ?)")
-		args = append(args, "%"+q+"%", "%"+q+"%")
+		// The search text is literal: % and _ must not act as wildcards.
+		pat := "%" + likeEscaper.Replace(q) + "%"
+		where = append(where, `(message LIKE ? ESCAPE '\' OR component LIKE ? ESCAPE '\')`)
+		args = append(args, pat, pat)
 	}
 	if beforeID > 0 {
 		where = append(where, "id < ?")
@@ -136,6 +138,8 @@ func (s *Store) Query(ctx context.Context, minLevel, q string, beforeID int64, l
 	return out, more, rows.Err()
 }
 
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
 func levelsAtLeast(min string) []string {
 	all := []string{"debug", "info", "warn", "error"}
 	for i, l := range all {
@@ -148,11 +152,11 @@ func levelsAtLeast(min string) []string {
 
 // Handler is a slog.Handler that forwards to an inner handler and to the store.
 type Handler struct {
-	inner slog.Handler
-	store *Store
-	level slog.Level
-	attrs []slog.Attr
-	group string
+	inner  slog.Handler
+	store  *Store
+	level  slog.Level
+	attrs  []slog.Attr // already qualified with the groups they were added under
+	groups []string
 }
 
 // NewHandler wraps inner so every record at or above level is also stored.
@@ -185,7 +189,8 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 		for _, a := range h.attrs {
 			addAttr(a)
 		}
-		r.Attrs(func(a slog.Attr) bool { addAttr(a); return true })
+		prefix := h.prefix()
+		r.Attrs(func(a slog.Attr) bool { addAttr(h.qualify(prefix, a)); return true })
 		e.Message = b.String()
 		select {
 		case h.store.ch <- e:
@@ -201,15 +206,39 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	n := *h
 	n.inner = h.inner.WithAttrs(attrs)
-	n.attrs = append(append([]slog.Attr{}, h.attrs...), attrs...)
+	prefix := h.prefix()
+	n.attrs = append([]slog.Attr{}, h.attrs...)
+	for _, a := range attrs {
+		n.attrs = append(n.attrs, h.qualify(prefix, a))
+	}
 	return &n
 }
 
 func (h *Handler) WithGroup(name string) slog.Handler {
+	if name == "" {
+		return h
+	}
 	n := *h
 	n.inner = h.inner.WithGroup(name)
-	n.group = name
+	n.groups = append(append([]string{}, h.groups...), name)
 	return &n
+}
+
+// prefix is the qualifier for keys added under the open groups ("a.b.").
+func (h *Handler) prefix() string {
+	if len(h.groups) == 0 {
+		return ""
+	}
+	return strings.Join(h.groups, ".") + "."
+}
+
+// qualify prefixes a key with the open groups, as slog handlers must; a grouped
+// key can then no longer be mistaken for the top-level "component".
+func (h *Handler) qualify(prefix string, a slog.Attr) slog.Attr {
+	if prefix == "" || a.Key == "" {
+		return a
+	}
+	return slog.Attr{Key: prefix + a.Key, Value: a.Value}
 }
 
 func levelName(l slog.Level) string {
