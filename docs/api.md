@@ -201,6 +201,7 @@ either download mode but only has an effect in `selected`.
   "paused": false,
   "active": [ { "file_id": 42, "game_id": 1, "game_title": "The Witcher", "filename": "setup.exe",
                 "size": 1000, "downloaded_bytes": 500, "speed_bps": 1000000, "eta_seconds": 10 } ],
+  // eta_seconds is null while the speed (transfer just started or stalled) or the size is unknown
   "queued_total": 30,
   "queue": [ { "file_id": 43, "game_id": 1, "game_title": "...", "name": "...", "os": "windows", "size": 1000 } ]
 }

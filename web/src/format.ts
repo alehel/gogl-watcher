@@ -27,7 +27,10 @@ export function formatSpeed(bps: number | null | undefined): string {
 
 export function formatPercent(fraction: number | null | undefined): string {
   if (fraction === null || fraction === undefined || !Number.isFinite(fraction)) return "0%";
-  return `${Math.max(0, Math.min(100, fraction * 100)).toFixed(fraction >= 0.995 && fraction < 1 ? 1 : 0)}%`;
+  const f = Math.max(0, Math.min(1, fraction));
+  // Something that is not finished never reads as 100%: floor, do not round, near the end.
+  if (f >= 0.995 && f < 1) return `${(Math.floor(f * 1000) / 10).toFixed(1)}%`;
+  return `${Math.round(f * 100)}%`;
 }
 
 export function ratio(done: number, total: number): number {
@@ -63,13 +66,17 @@ export function formatRelative(iso: string | null | undefined, now: number = Dat
   const future = diff > 0;
   let text: string;
   if (abs < 10) return "just now";
-  if (abs < 60) text = `${Math.round(abs)} s`;
-  else if (abs < 3600) text = `${Math.round(abs / 60)} min`;
-  else if (abs < 86400) {
-    const h = abs / 3600;
-    text = h < 10 ? `${h.toFixed(1).replace(/\.0$/, "")} h` : `${Math.round(h)} h`;
-  } else if (abs < 86400 * 30) text = `${Math.round(abs / 86400)} d`;
-  else if (abs < 86400 * 365) text = `${Math.round(abs / (86400 * 30))} mo`;
+  // Round first, then pick the unit, so 59.7 min reads "1 h" rather than "60 min".
+  const minutes = Math.round(abs / 60);
+  const hours = abs / 3600;
+  const days = Math.round(abs / 86400);
+  const months = Math.round(abs / (86400 * 30));
+  if (abs < 59.5) text = `${Math.round(abs)} s`;
+  else if (minutes < 60) text = `${minutes} min`;
+  else if (hours < 9.95) text = `${hours.toFixed(1).replace(/\.0$/, "")} h`;
+  else if (Math.round(hours) < 24) text = `${Math.round(hours)} h`;
+  else if (days < 30) text = `${days} d`;
+  else if (months < 12) text = `${months} mo`;
   else text = `${Math.round(abs / (86400 * 365))} y`;
   return future ? `in ${text}` : `${text} ago`;
 }

@@ -26,9 +26,21 @@ import { kbpsToMbps, mbpsToKbps } from "../format";
 import { useAsync } from "../hooks";
 
 function clampInt(v: string, min: number, max: number, fallback: number): number {
+  if (v.trim() === "") return fallback;
   const n = Math.round(Number(v));
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, n));
+}
+
+/** Only the fields the user changed, on top of the settings as stored right now. */
+function mergeEdits(fresh: Settings, form: Settings, initial: Settings): Settings {
+  const out = { ...fresh };
+  for (const key of Object.keys(form) as Array<keyof Settings>) {
+    if (JSON.stringify(form[key]) !== JSON.stringify(initial[key])) {
+      (out as Record<string, unknown>)[key] = form[key];
+    }
+  }
+  return out;
 }
 
 export function SettingsPage() {
@@ -82,8 +94,13 @@ function SettingsForm({
   const toast = useToast();
   const [form, setForm] = useState<Settings>(initial);
   const [mbps, setMbps] = useState(String(kbpsToMbps(initial.speed_limit_kbps)));
+  // Integer fields keep their raw text while being edited so they can be cleared and retyped.
+  const [concText, setConcText] = useState(String(initial.max_concurrent_downloads));
+  const [intervalText, setIntervalText] = useState(String(initial.check_interval_hours));
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<SettingsPreview | null>(null);
+  // What will be sent: the user's edits applied to the settings as stored when saving started.
+  const [payload, setPayload] = useState<Settings | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) => setForm((f) => ({ ...f, [key]: value }));
@@ -112,8 +129,9 @@ function SettingsForm({
     setBusy(true);
     setError(null);
     try {
-      await putSettings(form, onRemoved);
+      await putSettings(payload ?? form, onRemoved);
       setConfirm(null);
+      setPayload(null);
       toast.success("Settings saved");
       onSaved();
     } catch (e) {
@@ -139,7 +157,11 @@ function SettingsForm({
     setBusy(true);
     setError(null);
     try {
-      const preview = await previewSettings(form);
+      // Another page or device may have changed settings (e.g. paused downloads)
+      // since this form was loaded; only send the fields edited here.
+      const merged = mergeEdits(await getSettings(), form, initial);
+      setPayload(merged);
+      const preview = await previewSettings(merged);
       if (preview.needs_confirmation) {
         setConfirm(preview);
         setBusy(false);
@@ -157,6 +179,8 @@ function SettingsForm({
   const reset = () => {
     setForm(initial);
     setMbps(String(kbpsToMbps(initial.speed_limit_kbps)));
+    setConcText(String(initial.max_concurrent_downloads));
+    setIntervalText(String(initial.check_interval_hours));
   };
 
   return (
@@ -225,8 +249,12 @@ function SettingsForm({
                   min={1}
                   max={8}
                   step={1}
-                  value={form.max_concurrent_downloads}
-                  onChange={(e) => set("max_concurrent_downloads", clampInt(e.target.value, 1, 8, 1))}
+                  value={concText}
+                  onChange={(e) => {
+                    setConcText(e.target.value);
+                    if (e.target.value.trim() !== "") set("max_concurrent_downloads", clampInt(e.target.value, 1, 8, 1));
+                  }}
+                  onBlur={() => setConcText(String(form.max_concurrent_downloads))}
                   disabled={busy}
                 />
                 <span className="unit">1–8</span>
@@ -260,8 +288,12 @@ function SettingsForm({
                   min={1}
                   max={168}
                   step={1}
-                  value={form.check_interval_hours}
-                  onChange={(e) => set("check_interval_hours", clampInt(e.target.value, 1, 168, 6))}
+                  value={intervalText}
+                  onChange={(e) => {
+                    setIntervalText(e.target.value);
+                    if (e.target.value.trim() !== "") set("check_interval_hours", clampInt(e.target.value, 1, 168, 6));
+                  }}
+                  onBlur={() => setIntervalText(String(form.check_interval_hours))}
                   disabled={busy}
                 />
                 <span className="unit">hours</span>
@@ -294,7 +326,10 @@ function SettingsForm({
           reasons={confirm.reasons}
           languages={languages}
           busy={busy}
-          onCancel={() => setConfirm(null)}
+          onCancel={() => {
+            setConfirm(null);
+            setPayload(null);
+          }}
           onKeep={() => void apply("keep")}
           onDelete={() => void apply("delete")}
         />

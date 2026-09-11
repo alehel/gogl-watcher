@@ -185,7 +185,8 @@ export interface ActiveDownload {
   size: number;
   downloaded_bytes: number;
   speed_bps: number;
-  eta_seconds: number;
+  /** null while the speed is unknown (just started, stalled) or the size is. */
+  eta_seconds: number | null;
 }
 
 export interface QueuedDownload {
@@ -266,9 +267,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
   if (!res.ok) {
     // A reverse proxy (or the Vite dev proxy) answering for a dead backend: treat as unreachable
-    // so the UI shows "API unreachable" and keeps polling instead of a generic error.
+    // so the UI shows "API unreachable" and keeps polling instead of a generic error. The backend
+    // itself always answers with a JSON error object (it uses 502 for a failed GOG call), so a
+    // 5xx with such a body is a real error with a message worth showing.
     const isJsonError = data !== null && typeof data === "object";
-    if (res.status === 502 || res.status === 503 || res.status === 504 || (res.status >= 500 && !isJsonError)) {
+    if (res.status >= 500 && !isJsonError) {
       throw new NetworkError(`backend unavailable (HTTP ${res.status})`);
     }
     let message = `${res.status} ${res.statusText}`;

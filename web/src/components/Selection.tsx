@@ -52,6 +52,8 @@ export function useGameSelection(onChanged: () => void) {
         } else {
           setPending(null);
           toast.error(`Could not change the selection: ${errorMessage(e)}`);
+          // The optimistic checkbox has flipped; a refresh snaps it back to the server state.
+          onChanged();
         }
       } finally {
         setBusy(false);
@@ -68,7 +70,10 @@ export function useGameSelection(onChanged: () => void) {
       reasons={pending.preview.reasons}
       languages={languages.data?.languages ?? []}
       busy={busy}
-      onCancel={() => setPending(null)}
+      onCancel={() => {
+        setPending(null);
+        onChanged(); // nothing changed on the server; undo the optimistic flip
+      }}
       onKeep={() => void submit(pending.ids, false, "keep")}
       onDelete={() => void submit(pending.ids, false, "delete")}
     />
