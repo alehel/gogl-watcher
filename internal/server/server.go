@@ -142,20 +142,20 @@ func (s *Server) summarize(g db.Game, st db.GameStats, active map[int64][]downlo
 	switch {
 	case !settings.WantsGame(g):
 		out.Status = "unselected"
-	case g.DetailsSyncedAt == nil:
-		out.Status = "unsynced"
-	case st.FilesTotal == 0:
-		out.Status = "unavailable"
 	case len(active[g.ID]) > 0:
 		out.Status = "downloading"
 	case st.FilesError > 0:
 		out.Status = "error"
-	case st.FilesDone == st.FilesTotal:
+	case st.FilesTotal > 0 && st.FilesDone == st.FilesTotal:
 		out.Status = "complete"
 	case st.FilesDone > 0:
 		out.Status = "partial"
-	default:
+	case st.FilesTotal > 0:
 		out.Status = "pending"
+	case g.DetailsSyncedAt == nil:
+		out.Status = "unsynced"
+	default:
+		out.Status = "unavailable"
 	}
 	if out.BytesTotal > 0 {
 		out.Progress = float64(out.BytesDone) / float64(out.BytesTotal)

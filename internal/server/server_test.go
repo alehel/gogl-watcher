@@ -143,7 +143,9 @@ func TestSetupFlowAndSettings(t *testing.T) {
 	if len(games) < 10 {
 		t.Fatalf("expected the sample library, got %d games", len(games))
 	}
-	waitSyncIdle(t, srv) // details are fetched after the list; wait for them too
+	waitSyncIdle(t, srv)
+	_, out = call(t, srv, "GET", "/api/games", nil)
+	games, _ = out["games"].([]any)
 	_, st = call(t, srv, "GET", "/api/status", nil)
 	if st["setup_complete"] != true || st["setup_step"] != "done" {
 		t.Errorf("final status: %v", st)
@@ -241,6 +243,19 @@ func gameByID(t *testing.T, srv *httptest.Server, id string) map[string]any {
 	return detail
 }
 
+func TestSummarizePendingFilesBeforeDetailsSynced(t *testing.T) {
+	s := &Server{}
+	settings := db.DefaultSettings()
+	settings.DownloadMode = db.DownloadSelected
+	game := db.Game{ID: 1, Title: "The Witcher", Selected: true}
+	stats := db.GameStats{FilesTotal: 3, BytesTotal: 1024}
+
+	got := s.summarize(game, stats, map[int64][]downloader.Progress{}, settings)
+	if got.Status != "pending" {
+		t.Fatalf("status = %q, want pending", got.Status)
+	}
+}
+
 func TestSelectedModeDownloadsOnlySelectedGames(t *testing.T) {
 	srv, d := newTestServer(t)
 	ctx := context.Background()
@@ -260,6 +275,8 @@ func TestSelectedModeDownloadsOnlySelectedGames(t *testing.T) {
 	}
 	games := waitGames(t, srv, 10)
 	waitSyncIdle(t, srv)
+	_, out := call(t, srv, "GET", "/api/games", nil)
+	games = out["games"].([]any)
 
 	// Nothing is selected by default, so nothing is planned or queued.
 	for _, g := range games {
