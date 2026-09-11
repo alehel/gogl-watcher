@@ -30,7 +30,14 @@ const (
 	readChunk   = 64 << 10
 	minBurst    = 256 << 10
 	maxAttempts = 4
+	// defaultStallTimeout is how long a transfer may deliver no data before it is
+	// abandoned and retried; a connection that silently dies would otherwise hold
+	// its download slot forever.
+	defaultStallTimeout = 2 * time.Minute
 )
+
+// errStalled marks a transfer that stopped delivering data.
+var errStalled = errors.New("transfer stalled")
 
 // Progress is the live state of one transfer.
 type Progress struct {
@@ -64,6 +71,11 @@ type Manager struct {
 
 	limiter *rate.Limiter
 	wake    chan struct{}
+	// StallTimeout is how long a transfer may deliver no data before it is
+	// abandoned and retried. Set before Run.
+	StallTimeout time.Duration
+
+	transfers sync.WaitGroup // running transfer goroutines
 
 	mu        sync.Mutex
 	active    map[int64]*transfer
@@ -78,7 +90,7 @@ func New(d *db.DB, g gog.API, paths library.Paths, log *slog.Logger) *Manager {
 	return &Manager{
 		db: d, gog: g, paths: paths, log: log.With("component", "download"),
 		limiter: rate.NewLimiter(rate.Inf, minBurst), wake: make(chan struct{}, 1),
-		active: map[int64]*transfer{}, maxActive: 2,
+		active: map[int64]*transfer{}, maxActive: 2, StallTimeout: defaultStallTimeout,
 	}
 }
 
@@ -183,7 +195,9 @@ func (m *Manager) Cancel(fileID int64) {
 	}
 }
 
-// Run drives the queue until ctx is cancelled.
+// Run drives the queue until ctx is cancelled, then waits for the running
+// transfers to wind down so their final state reaches the database before the
+// caller closes it.
 func (m *Manager) Run(ctx context.Context) {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
@@ -196,6 +210,7 @@ func (m *Manager) Run(ctx context.Context) {
 				t.cancel()
 			}
 			m.mu.Unlock()
+			m.transfers.Wait()
 			return
 		case <-ticker.C:
 		case <-m.wake:
@@ -237,14 +252,18 @@ func (m *Manager) startTransfer(parent context.Context, f db.File) {
 	t := &transfer{file: f, gameTitle: game.Title, filename: f.Filename, startedAt: time.Now(), cancel: cancel}
 	t.size.Store(f.Size)
 	m.mu.Lock()
-	if _, exists := m.active[f.ID]; exists || len(m.active) >= m.maxActive {
+	// The queue was read without the lock held, so re-check the pause and
+	// setup state: a pause that landed meanwhile must not be lost.
+	if _, exists := m.active[f.ID]; exists || len(m.active) >= m.maxActive || m.paused || !m.enabled {
 		m.mu.Unlock()
 		cancel()
 		return
 	}
 	m.active[f.ID] = t
+	m.transfers.Add(1)
 	m.mu.Unlock()
 	go func() {
+		defer m.transfers.Done()
 		defer func() {
 			cancel()
 			m.mu.Lock()
@@ -307,11 +326,15 @@ func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error
 			m.log.Debug("no checksum available", "file", f.Name, "error", err)
 		}
 	}
+	// The transfer itself runs under a context that the stall watchdog can cancel
+	// without this looking like a user cancellation.
+	dlCtx, abort := context.WithCancelCause(ctx)
+	defer abort(nil)
 	// Open the transfer first so a Content-Disposition name can be used when the URL has none.
 	partPath := ""
 	var offset int64
 	openWithOffset := func(off int64) (*gog.Download, error) {
-		return m.gog.OpenDownload(ctx, link.URL, off)
+		return m.gog.OpenDownload(dlCtx, link.URL, off)
 	}
 	dl, err := openWithOffset(0)
 	if err != nil {
@@ -330,7 +353,9 @@ func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error
 	rel := library.LocalRelPath(game.Folder, f.RelDir, filename)
 	abs := m.paths.Abs(rel)
 	partPath = abs + ".part"
-	t.filename = filename
+	m.mu.Lock()
+	t.filename = filename // read by Active() under the same lock
+	m.mu.Unlock()
 	t.size.Store(expectedSize)
 	if err := m.db.SetFileResolved(ctx, f.ID, filename, rel, expectedMD5, expectedSize); err != nil {
 		dl.Body.Close()
@@ -345,9 +370,15 @@ func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error
 		dl.Body.Close()
 		if expectedMD5 == "" || fileMD5(abs) == expectedMD5 {
 			m.log.Info("file already present, skipping download", "game", game.Title, "file", filename)
-			return m.db.SetFileDone(ctx, f.ID, rel, expectedSize)
+			_, err := m.complete(ctx, f, rel, expectedSize, game.Title)
+			return err
 		}
+		m.log.Warn("file on disk does not match GOG's checksum, downloading again", "game", game.Title, "file", filename)
 		_ = os.Remove(abs)
+		// The transfer was closed while hashing; open it again for the download.
+		if dl, err = openWithOffset(0); err != nil {
+			return fmt.Errorf("opening download: %w", err)
+		}
 	}
 	// Resume a partial file when possible.
 	if st, err := os.Stat(partPath); err == nil && st.Size() > 0 && st.Size() < expectedSize {
@@ -400,8 +431,14 @@ func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error
 		m.log.Info("downloading", "game", game.Title, "file", filename, "size", expectedSize)
 	}
 	stopSpeed := m.trackSpeed(ctx, t)
-	written, err := m.copy(ctx, out, dl.Body, hasher, t)
+	written, err := m.copy(ctx, dlCtx, abort, out, dl.Body, hasher, t)
 	stopSpeed()
+	if err == nil {
+		// The file is renamed into place and recorded as done right after this;
+		// make sure the bytes are on disk first so a crash cannot leave a
+		// truncated installer that the database calls complete.
+		err = out.Sync()
+	}
 	if cerr := out.Close(); err == nil && cerr != nil {
 		err = cerr
 	}
@@ -422,26 +459,62 @@ func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error
 	if err := os.Rename(partPath, abs); err != nil {
 		return err
 	}
+	ok, err := m.complete(ctx, f, rel, total, game.Title)
+	if err != nil || !ok {
+		if !ok {
+			// What was downloaded is the old build; the row is pending for the new one.
+			_ = os.Remove(abs)
+		}
+		return err
+	}
 	if f.PreviousPath != "" && f.PreviousPath != rel {
 		if err := m.paths.Remove(f.PreviousPath); err == nil {
 			m.log.Info("removed superseded file", "path", f.PreviousPath)
 		}
 	}
 	m.log.Info("download complete", "game", game.Title, "file", filename, "size", total)
-	return m.db.SetFileDone(ctx, f.ID, rel, total)
+	return nil
 }
 
-func (m *Manager) copy(ctx context.Context, dst io.Writer, src io.Reader, h hash.Hash, t *transfer) (int64, error) {
+// complete records the file as done unless a sync replaced its version or download
+// link while it was transferring, in which case the bytes on disk belong to the
+// old build and must not be presented as the new one.
+func (m *Manager) complete(ctx context.Context, f db.File, rel string, size int64, title string) (bool, error) {
+	ok, err := m.db.CompleteFile(ctx, f.ID, rel, size, f.Downlink, f.Version)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		m.log.Info("file changed on GOG during download, fetching the new version", "game", title, "file", f.Name)
+	}
+	return ok, nil
+}
+
+// copy streams src to dst, enforcing the speed limit and aborting the transfer
+// (via abort, which cancels dlCtx) when no data arrives for StallTimeout.
+func (m *Manager) copy(ctx, dlCtx context.Context, abort context.CancelCauseFunc, dst io.Writer, src io.Reader, h hash.Hash, t *transfer) (int64, error) {
 	buf := make([]byte, readChunk)
 	var written int64
+	var watchdog *time.Timer
+	if m.StallTimeout > 0 {
+		watchdog = time.AfterFunc(m.StallTimeout, func() { abort(errStalled) })
+		defer watchdog.Stop()
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return written, err
 		}
 		n, rerr := src.Read(buf)
 		if n > 0 {
+			// Waiting for bandwidth is not a stall.
+			if watchdog != nil {
+				watchdog.Stop()
+			}
 			if err := m.limiter.WaitN(ctx, n); err != nil {
 				return written, err
+			}
+			if watchdog != nil {
+				watchdog.Reset(m.StallTimeout)
 			}
 			if _, werr := dst.Write(buf[:n]); werr != nil {
 				return written, werr
@@ -458,6 +531,9 @@ func (m *Manager) copy(ctx context.Context, dst io.Writer, src io.Reader, h hash
 		if rerr != nil {
 			if ctx.Err() != nil {
 				return written, ctx.Err()
+			}
+			if errors.Is(context.Cause(dlCtx), errStalled) {
+				return written, fmt.Errorf("no data received for %s", m.StallTimeout)
 			}
 			return written, rerr
 		}
