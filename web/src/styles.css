@@ -519,6 +519,11 @@ input[type="radio"] {
 .segmented button + button { border-left: 1px solid var(--border-strong); }
 .segmented button[aria-pressed="true"] { background: var(--surface-2); color: var(--text); }
 
+/* ---- toggle button: a standalone on/off control, so the pressed state has to read
+   without a neighbouring button to compare it with. */
+.btn.toggle[aria-pressed="true"] { background: var(--btn-bg); color: var(--btn-text); border-color: var(--btn-bg); }
+.btn.toggle[aria-pressed="true"]:hover:not(:disabled) { background: var(--btn-bg); opacity: 0.9; }
+
 /* ---- empty / loading */ .empty { color: var(--text-2); padding: 8px 0; }
 .loading {
   display: flex;

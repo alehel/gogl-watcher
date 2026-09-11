@@ -21,7 +21,8 @@ limit bandwidth and concurrency.
   resumable `.part` files, MD5 verification against GOG's checksums, automatic retries with
   backoff, free-space check.
 - **Web UI** – first-run wizard (authorize → games → platforms → content), dashboard, library
-  grid with per-game file lists and selection, downloads page with pause/resume, searchable logs,
+  grid with per-game file lists and selection, sorting by title, status or last update with an
+  optional "downloaded first" grouping, downloads page with pause/resume, searchable logs,
   settings.
 - **Safe settings changes** – removing a platform (or DLC/extras), deselecting a game or switching
   to "selected games only" asks whether to keep or delete the files already on disk.

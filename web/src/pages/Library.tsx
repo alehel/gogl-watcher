@@ -22,12 +22,21 @@ const STATUSES: GameStatus[] = [
 ];
 type View = "table" | "grid";
 const VIEW_KEY = "gogl-watcher.libraryView";
+const DOWNLOADED_FIRST_KEY = "gogl-watcher.libraryDownloadedFirst";
 
 function readView(): View {
   try {
     return localStorage.getItem(VIEW_KEY) === "grid" ? "grid" : "table";
   } catch {
     return "table";
+  }
+}
+
+function readDownloadedFirst(): boolean {
+  try {
+    return localStorage.getItem(DOWNLOADED_FIRST_KEY) === "1";
+  } catch {
+    return false;
   }
 }
 
@@ -72,6 +81,7 @@ export function LibraryPage() {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<GameStatus | "">("");
   const [sort, setSort] = useState<GameSort>("title");
+  const [downloadedFirst, setDownloadedFirstState] = useState<boolean>(readDownloadedFirst);
   const [view, setViewState] = useState<View>(readView);
   const dq = useDebounced(q.trim(), 250);
 
@@ -84,7 +94,20 @@ export function LibraryPage() {
     }
   };
 
-  const games = usePolling(() => getGames({ q: dq, status: filter, sort }), 5000, [dq, filter, sort]);
+  const setDownloadedFirst = (on: boolean) => {
+    setDownloadedFirstState(on);
+    try {
+      localStorage.setItem(DOWNLOADED_FIRST_KEY, on ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const games = usePolling(
+    () => getGames({ q: dq, status: filter, sort, downloaded_first: downloadedFirst || undefined }),
+    5000,
+    [dq, filter, sort, downloadedFirst],
+  );
   const selection = useGameSelection(() => {
     games.refresh();
     refreshStatus();
@@ -144,6 +167,15 @@ export function LibraryPage() {
           <option value="status">Sort: Status</option>
           <option value="updated">Sort: Recently updated</option>
         </select>
+        <button
+          type="button"
+          className="btn toggle"
+          aria-pressed={downloadedFirst}
+          onClick={() => setDownloadedFirst(!downloadedFirst)}
+          title="List games with downloaded files first; the sort above orders each group"
+        >
+          Downloaded first
+        </button>
         <div className="segmented right" role="group" aria-label="View">
           <button type="button" aria-pressed={view === "table"} onClick={() => setView("table")}>
             Table

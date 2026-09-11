@@ -123,8 +123,10 @@ Language codes available for the picker: `GET /api/settings/languages` →
 
 ## Library
 
-### `GET /api/games?q=&status=&sort=`
+### `GET /api/games?q=&status=&sort=&downloaded_first=`
 `status` filter: one of the game statuses below; `sort`: `title` (default) | `status` | `updated`.
+`downloaded_first=1` lists the games that already have files on disk (`files_done > 0`) before
+the rest; `sort` then orders each of the two groups.
 
 ```json
 { "games": [ {

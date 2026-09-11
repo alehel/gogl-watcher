@@ -321,6 +321,8 @@ export interface GamesQuery {
   q?: string;
   status?: GameStatus | "";
   sort?: GameSort;
+  /** Lists games with files on disk before the rest; `sort` orders each group. */
+  downloaded_first?: boolean;
 }
 export const getGames = (query: GamesQuery = {}) =>
   request<{ games: GameSummary[] }>("GET", `/api/games${qs(query)}`);
