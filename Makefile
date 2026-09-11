@@ -1,4 +1,5 @@
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# Bare version (1.2.3, or 1.2.3-4-gabcdef between tags): the UI adds the "v".
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
 
 .PHONY: all web build test run mock docker clean
 

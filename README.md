@@ -119,8 +119,9 @@ never move `latest`.
 
 - **`/data`** holds the SQLite database: your settings, the record of every file and its
   version, the logs shown in the UI, and the GOG refresh token. Back this directory up and
-  treat it as secret; anyone with the token can act as your GOG account until you disconnect
-  in Settings.
+  treat it as secret: anyone with the token can act as your GOG account. Disconnecting in
+  Settings only removes the token from this app; a copy that has leaked stays valid until you
+  end your sessions or change your password on gog.com.
 - **`/library`** holds the installers, one folder per game. It is safe to read from, copy or
   serve from the host while the service runs; the app writes new files as `<name>.part` and
   renames them only after the size and checksum have been verified.
