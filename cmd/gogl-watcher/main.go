@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -97,14 +98,16 @@ func run() error {
 	}
 	setupDone, _ := database.SetupComplete(ctx)
 	dl.Configure(settings, setupDone)
-	if n, err := database.MarkMissingDone(ctx, paths.Exists); err != nil {
-		log.Warn("startup disk check failed", "component", "main", "error", err)
+	if n, err := syncer.CheckMissing(ctx); err != nil {
+		log.Warn("startup disk check skipped", "component", "main", "error", err)
 	} else if n > 0 {
 		log.Warn("downloaded files missing from disk, queued again", "component", "main", "count", n)
 	}
 
-	go dl.Run(ctx)
-	go sched.Run(ctx)
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() { defer workers.Done(); dl.Run(ctx) }()
+	go func() { defer workers.Done(); sched.Run(ctx) }()
 
 	srv := &server.Server{
 		DB: database, GOG: api, Syncer: syncer, Downloads: dl, Scheduler: sched, Logs: logs, Paths: paths,
@@ -119,7 +122,12 @@ func run() error {
 	}()
 	log.Info("gogl-watcher started", "component", "main", "version", config.Version, "listen", cfg.Listen,
 		"library", cfg.LibraryDir, "data", cfg.DataDir, "setup_complete", setupDone, "mock", mock)
-	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	err = httpServer.ListenAndServe()
+	// Stop the workers (also when the listener failed) and let running transfers
+	// record their state before the deferred closes take the database away.
+	stop()
+	workers.Wait()
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	log.Info("shutting down", "component", "main")

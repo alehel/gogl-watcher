@@ -57,15 +57,24 @@ type Client struct {
 	userAgent string
 	limiter   *rate.Limiter
 
-	mu    sync.Mutex
+	mu    sync.Mutex // guards token
 	token Token
+	// refreshMu serialises token refreshes. It is never held together with mu
+	// across a network call, so readers of the token state are not blocked while
+	// GOG is slow to answer.
+	refreshMu sync.Mutex
 }
 
 // NewClient creates a client and loads any stored token.
 func NewClient(ctx context.Context, store TokenStore, log *slog.Logger, version string) (*Client, error) {
+	// Installer transfers can legitimately take hours, so the download client has no
+	// overall timeout; the transport still gives up on a server that never answers,
+	// and the downloader aborts transfers that stop delivering data.
+	dlTransport := http.DefaultTransport.(*http.Transport).Clone()
+	dlTransport.ResponseHeaderTimeout = 60 * time.Second
 	c := &Client{
 		http:      &http.Client{Timeout: 90 * time.Second},
-		dl:        &http.Client{},
+		dl:        &http.Client{Transport: dlTransport},
 		store:     store,
 		log:       log.With("component", "gog"),
 		userAgent: "gogl-watcher/" + version,
@@ -139,23 +148,36 @@ func (c *Client) ExchangeCode(ctx context.Context, input string) (*User, error) 
 	c.mu.Lock()
 	c.token = t
 	c.mu.Unlock()
+	if err := c.store.Save(ctx, t); err != nil {
+		return nil, err
+	}
 	// Fetch the username; failure here is not fatal.
+	username, userID := "", t.UserID
 	if u, err := c.fetchUser(ctx); err == nil {
-		t.Username = u.Username
+		username = u.Username
 		if u.ID != "" {
-			t.UserID = u.ID
+			userID = u.ID
 		}
 	} else {
 		c.log.Warn("could not fetch user data", "error", err)
 	}
+	// Annotate the live token rather than the copy from before the fetch: the
+	// fetch itself may have refreshed (and rotated) the tokens, or a logout may
+	// have happened meanwhile.
 	c.mu.Lock()
-	c.token = t
+	if c.token.RefreshToken == "" {
+		c.mu.Unlock()
+		return nil, &AuthError{Msg: "disconnected while authorizing", Permanent: true}
+	}
+	c.token.Username = username
+	c.token.UserID = userID
+	live := c.token
 	c.mu.Unlock()
-	if err := c.store.Save(ctx, t); err != nil {
+	if err := c.store.Save(ctx, live); err != nil {
 		return nil, err
 	}
-	c.log.Info("authorized with GOG", "user", t.Username)
-	return &User{ID: t.UserID, Username: t.Username}, nil
+	c.log.Info("authorized with GOG", "user", live.Username)
+	return &User{ID: live.UserID, Username: live.Username}, nil
 }
 
 func (c *Client) tokenRequest(ctx context.Context, q url.Values) (*tokenResponse, error) {
@@ -166,6 +188,13 @@ func (c *Client) tokenRequest(ctx context.Context, q url.Values) (*tokenResponse
 	req.Header.Set("User-Agent", c.userAgent)
 	resp, err := c.http.Do(req)
 	if err != nil {
+		// The request URL carries the client secret and the refresh token or the
+		// authorization code, and *url.Error prints it. Errors end up in logs, the
+		// database and API responses, so strip the URL.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
 		return nil, fmt.Errorf("token request failed: %w", err)
 	}
 	defer resp.Body.Close()
@@ -180,7 +209,9 @@ func (c *Client) tokenRequest(ctx context.Context, q url.Values) (*tokenResponse
 		if msg == "" {
 			msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		}
-		return nil, &AuthError{Msg: "GOG rejected the request: " + msg, Permanent: resp.StatusCode >= 400 && resp.StatusCode < 500}
+		// 4xx means GOG rejected the grant itself; rate limiting is transient.
+		permanent := resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests
+		return nil, &AuthError{Msg: "GOG rejected the request: " + msg, Permanent: permanent}
 	}
 	return &tr, nil
 }
@@ -225,8 +256,10 @@ func (c *Client) Logout(ctx context.Context) error {
 	return c.store.Clear(ctx)
 }
 
-// accessToken returns a valid access token, refreshing when needed.
-func (c *Client) accessToken(ctx context.Context) (string, error) {
+// currentToken returns the stored access token if it is still usable, "" if it
+// has to be refreshed, or an error if the client cannot make authenticated
+// requests at all.
+func (c *Client) currentToken() (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.token.RefreshToken == "" {
@@ -238,21 +271,55 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 	if c.token.AccessToken != "" && time.Until(c.token.ExpiresAt) > 2*time.Minute {
 		return c.token.AccessToken, nil
 	}
+	return "", nil
+}
+
+// accessToken returns a valid access token, refreshing when needed. The token
+// mutex is not held while GOG is being asked, so Authenticated() and the status
+// endpoint never wait on the network.
+func (c *Client) accessToken(ctx context.Context) (string, error) {
+	tok, err := c.currentToken()
+	if err != nil || tok != "" {
+		return tok, err
+	}
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	// Another request may have refreshed the token while we waited for the lock.
+	tok, err = c.currentToken()
+	if err != nil || tok != "" {
+		return tok, err
+	}
+	c.mu.Lock()
+	refresh := c.token.RefreshToken
+	c.mu.Unlock()
 	q := url.Values{}
 	q.Set("client_id", clientID)
 	q.Set("client_secret", clientSecret)
 	q.Set("grant_type", "refresh_token")
-	q.Set("refresh_token", c.token.RefreshToken)
-	tr, err := c.tokenRequest(ctx, q)
-	if err != nil {
+	q.Set("refresh_token", refresh)
+	tr, rerr := c.tokenRequest(ctx, q)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.token.RefreshToken != refresh {
+		// Logged out or re-authorized while the refresh was in flight: the answer
+		// belongs to a session that no longer exists.
+		if c.token.RefreshToken == "" {
+			return "", &AuthError{Msg: "not authorized with GOG", Permanent: true}
+		}
+		if c.token.AccessToken != "" {
+			return c.token.AccessToken, nil
+		}
+		return "", errors.New("GOG session changed during token refresh")
+	}
+	if rerr != nil {
 		var ae *AuthError
-		if errors.As(err, &ae) && ae.Permanent {
+		if errors.As(rerr, &ae) && ae.Permanent {
 			c.token.Error = "GOG session expired, please authorize again (" + ae.Msg + ")"
 			_ = c.store.Save(ctx, c.token)
 			c.log.Error("refresh token rejected, re-authorization required", "error", ae.Msg)
 			return "", &AuthError{Msg: c.token.Error, Permanent: true}
 		}
-		return "", err
+		return "", rerr
 	}
 	c.token.AccessToken = tr.AccessToken
 	if tr.RefreshToken != "" {

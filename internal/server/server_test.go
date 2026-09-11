@@ -435,3 +435,132 @@ func TestExistingInstallKeepsDownloadingEverything(t *testing.T) {
 		t.Errorf("finished setups without a mode must default to all, got %q", got.DownloadMode)
 	}
 }
+
+// Saving a new check interval must be reflected in the scheduled next run at once.
+func TestIntervalChangeReschedulesNextRun(t *testing.T) {
+	srv, _ := newTestServer(t)
+	if code, _ := call(t, srv, "POST", "/api/auth/code", map[string]string{"code": "abc"}); code != 200 {
+		t.Fatal("auth failed")
+	}
+	_, settings := call(t, srv, "GET", "/api/settings", nil)
+	settings["download_mode"] = "selected"
+	settings["platforms"] = []string{"windows"}
+	settings["content_chosen"] = true
+	if code, out := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings}); code != 200 {
+		t.Fatalf("save settings: %d %v", code, out)
+	}
+	if code, out := call(t, srv, "POST", "/api/setup/complete", nil); code != 200 {
+		t.Fatalf("complete: %d %v", code, out)
+	}
+	waitSyncIdle(t, srv)
+	nextRunIn := func() time.Duration {
+		_, st := call(t, srv, "GET", "/api/status", nil)
+		next, _ := st["sync"].(map[string]any)["next_run_at"].(string)
+		if next == "" {
+			return 0
+		}
+		ts, err := time.Parse(time.RFC3339Nano, next)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return time.Until(ts)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && nextRunIn() < 5*time.Hour {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if d := nextRunIn(); d < 5*time.Hour {
+		t.Fatalf("expected the next run about 6 h away, got %v", d)
+	}
+	settings["check_interval_hours"] = 1
+	if code, out := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings}); code != 200 {
+		t.Fatalf("save interval: %d %v", code, out)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && nextRunIn() > 2*time.Hour {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if d := nextRunIn(); d <= 0 || d > 2*time.Hour {
+		t.Fatalf("next run should follow the new 1 h interval, got %v", d)
+	}
+}
+
+// State-changing requests from another site are refused; same-site and
+// non-browser requests go through.
+func TestCrossSiteWritesAreRefused(t *testing.T) {
+	srv, _ := newTestServer(t)
+	do := func(headers map[string]string) int {
+		t.Helper()
+		req, _ := http.NewRequest("POST", srv.URL+"/api/downloads/pause", nil)
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	host := srv.Listener.Addr().String()
+	if code := do(map[string]string{"Origin": "https://evil.example", "Content-Type": "text/plain"}); code != 403 {
+		t.Errorf("cross-origin POST: %d, want 403", code)
+	}
+	if code := do(map[string]string{"Sec-Fetch-Site": "cross-site"}); code != 403 {
+		t.Errorf("Sec-Fetch-Site cross-site: %d, want 403", code)
+	}
+	if code := do(map[string]string{"Origin": "http://" + host, "Sec-Fetch-Site": "same-origin"}); code != 200 {
+		t.Errorf("same-origin POST: %d, want 200", code)
+	}
+	if code := do(map[string]string{"Origin": "http://" + host}); code != 200 {
+		t.Errorf("same-host POST without Sec-Fetch-Site: %d, want 200", code)
+	}
+	if code := do(nil); code != 200 {
+		t.Errorf("non-browser POST: %d, want 200", code)
+	}
+	// GET is never blocked.
+	req, _ := http.NewRequest("GET", srv.URL+"/api/status", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("GET with foreign origin: %d", resp.StatusCode)
+	}
+}
+
+// Disconnecting must not leave a scheduled next run in the status.
+func TestLogoutClearsNextRun(t *testing.T) {
+	srv, _ := newTestServer(t)
+	if code, _ := call(t, srv, "POST", "/api/auth/code", map[string]string{"code": "abc"}); code != 200 {
+		t.Fatal("auth failed")
+	}
+	_, settings := call(t, srv, "GET", "/api/settings", nil)
+	settings["download_mode"] = "selected"
+	settings["platforms"] = []string{"windows"}
+	settings["content_chosen"] = true
+	call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings})
+	if code, _ := call(t, srv, "POST", "/api/setup/complete", nil); code != 200 {
+		t.Fatal("complete failed")
+	}
+	waitSyncIdle(t, srv)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_, st := call(t, srv, "GET", "/api/status", nil)
+		if st["sync"].(map[string]any)["next_run_at"] != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if code, _ := call(t, srv, "POST", "/api/auth/logout", nil); code != 204 {
+		t.Fatal("logout failed")
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_, st := call(t, srv, "GET", "/api/status", nil)
+		if st["sync"].(map[string]any)["next_run_at"] == nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("next_run_at still set after logout")
+}

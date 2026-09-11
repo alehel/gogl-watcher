@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -19,7 +20,12 @@ func SanitizeFolder(title string) string {
 	s = multiSpace.ReplaceAllString(s, " ")
 	s = strings.Trim(s, " .")
 	if len(s) > 120 {
-		s = strings.TrimSpace(s[:120])
+		// Cut on a rune boundary so the name stays valid UTF-8.
+		cut := 120
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = strings.Trim(s[:cut], " .")
 	}
 	if s == "" {
 		return "untitled"
@@ -64,6 +70,18 @@ func (p Paths) Remove(rel string) error {
 	}
 	p.pruneEmpty(filepath.Dir(abs))
 	return nil
+}
+
+// RemovePart deletes the partial download of a library-relative file, if there is
+// one, leaving the file itself alone.
+func (p Paths) RemovePart(rel string) {
+	if rel == "" {
+		return
+	}
+	abs := p.Abs(rel)
+	if err := os.Remove(abs + ".part"); err == nil {
+		p.pruneEmpty(filepath.Dir(abs))
+	}
 }
 
 func (p Paths) pruneEmpty(dir string) {

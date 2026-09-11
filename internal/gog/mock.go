@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -258,10 +259,16 @@ func sampleProduct(id int64, title, slug string, installers []sampleInstaller, e
 		}
 		p.Downloads.Installers = append(p.Downloads.Installers, inst)
 	}
-	i := 0
-	for name, sz := range extras {
-		i++
-		fid := fmt.Sprintf("%d", 5000+i)
+	// Deterministic ids: map iteration order changes between runs and the ids are
+	// what the database keys files by.
+	names := make([]string, 0, len(extras))
+	for name := range extras {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for i, name := range names {
+		sz := extras[name]
+		fid := fmt.Sprintf("%d", 5001+i)
 		fname := strings.ToLower(strings.ReplaceAll(name, " ", "_")) + ".zip"
 		p.Downloads.BonusContent = append(p.Downloads.BonusContent, Bonus{ID: FlexString(fid), Name: name, Type: "soundtrack", Count: 1, TotalSize: FlexInt(sz),
 			Files: []DownloadFile{{ID: FlexString(fid), Size: FlexInt(sz), Downlink: MockDownlink(id, fid, fname, sz)}}})

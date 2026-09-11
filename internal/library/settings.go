@@ -3,6 +3,7 @@ package library
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/alehel/gogl-watcher/internal/db"
@@ -52,6 +53,15 @@ type unwanted struct {
 	reason string
 }
 
+// downloadedPath returns the copy of f that exists on disk: the finished download,
+// or the previous version that is kept while a newer one is pending. "" if none.
+func downloadedPath(f db.File) string {
+	if f.Status == db.StatusDone {
+		return f.LocalPath
+	}
+	return f.PreviousPath
+}
+
 func (s *Syncer) findUnwanted(ctx context.Context, ns db.Settings) ([]unwanted, error) {
 	files, err := s.db.ListActiveFiles(ctx)
 	if err != nil {
@@ -96,7 +106,7 @@ func previewOf(list []unwanted) *RemovalPreview {
 	for _, u := range list {
 		p.Removed.Files++
 		p.Removed.Bytes += u.file.Size
-		if u.file.Status == db.StatusDone {
+		if downloadedPath(u.file) != "" {
 			p.Removed.DownloadedFiles++
 			p.Removed.DownloadedBytes += u.file.Size
 		}
@@ -138,20 +148,24 @@ func (s *Syncer) dropFiles(ctx context.Context, list []unwanted, onRemoved, why 
 		if s.OnDrop != nil {
 			s.OnDrop(f.ID)
 		}
+		onDisk := downloadedPath(f)
+		// A transfer in progress is abandoned either way; only its partial file goes.
+		if f.Status != db.StatusDone {
+			s.paths.RemovePart(f.LocalPath)
+		}
 		switch {
-		case f.Status != db.StatusDone:
+		case onDisk == "":
 			if err := s.db.DeleteFile(ctx, f.ID); err != nil {
 				return err
 			}
-			_ = s.paths.Remove(f.LocalPath) // clears any .part
 		case onRemoved == "delete":
-			if err := s.paths.Remove(f.LocalPath); err != nil {
-				return fmt.Errorf("deleting %s: %w", f.LocalPath, err)
+			if err := s.paths.Remove(onDisk); err != nil {
+				return fmt.Errorf("deleting %s: %w", onDisk, err)
 			}
 			if err := s.db.DeleteFile(ctx, f.ID); err != nil {
 				return err
 			}
-			s.log.Info("deleted file after "+why, "path", f.LocalPath, "reason", u.reason)
+			s.log.Info("deleted file after "+why, "path", onDisk, "reason", u.reason)
 		default:
 			if err := s.db.SetFileInactive(ctx, f.ID); err != nil {
 				return err
@@ -165,11 +179,36 @@ func (s *Syncer) dropFiles(ctx context.Context, list []unwanted, onRemoved, why 
 }
 
 // ApplySettings stores ns. onRemoved must be "keep" or "delete" when downloaded
-// files stop being wanted; files never downloaded are simply forgotten.
+// files stop being wanted; files never downloaded are simply forgotten. A sync
+// that is running with the old settings is stopped first, since it would plan
+// (and re-add) files the new settings drop, and the next sync cannot start until
+// the new settings are stored; the caller triggers that fresh sync.
 func (s *Syncer) ApplySettings(ctx context.Context, ns db.Settings, onRemoved string) error {
+	// Ask before touching anything: a change that is refused for lack of an
+	// answer must not disturb a running sync.
 	list, err := s.findUnwanted(ctx, ns)
 	if err != nil {
 		return err
+	}
+	if p := previewOf(list); p.NeedsConfirmation && onRemoved != "keep" && onRemoved != "delete" {
+		return &ErrConfirmationRequired{Preview: p}
+	}
+	old, err := s.db.GetSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if !old.SamePlan(ns) {
+		if !s.lockPlan(ctx) {
+			return ctx.Err()
+		}
+		defer s.unlockPlan()
+		if err := s.CancelAndWait(ctx); err != nil {
+			return err
+		}
+		// The sync may have planned more files before it stopped.
+		if list, err = s.findUnwanted(ctx, ns); err != nil {
+			return err
+		}
 	}
 	if err := s.dropFiles(ctx, list, onRemoved, "settings change"); err != nil {
 		return err
@@ -182,6 +221,14 @@ func (s *Syncer) ApplySettings(ctx context.Context, ns db.Settings, onRemoved st
 // "delete" when downloaded files are affected. Selecting never touches files; the
 // caller syncs the games afterwards so their files get planned.
 func (s *Syncer) SetSelection(ctx context.Context, ids []int64, selected bool, onRemoved string) error {
+	// Hold the games' locks (in a fixed order) so a sync of one of them cannot plan
+	// files between the drop below and the flag change.
+	sorted := slices.Clone(ids)
+	slices.Sort(sorted)
+	sorted = slices.Compact(sorted)
+	for _, id := range sorted {
+		defer s.lockGame(id)()
+	}
 	if !selected {
 		settings, err := s.db.GetSettings(ctx)
 		if err != nil {

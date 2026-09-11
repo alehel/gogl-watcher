@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func openTest(t *testing.T) *DB {
@@ -218,5 +219,160 @@ func TestGameSelection(t *testing.T) {
 	bad.DownloadMode = "some"
 	if err := bad.Normalize(); err == nil {
 		t.Error("invalid mode should be rejected")
+	}
+}
+
+// GOG's manifest reports sizes rounded to whole MiB while the downloader records
+// the exact byte count. Comparing the two must not make a finished file look
+// updated on every sync.
+func TestManifestSizeIsNotComparedWithMeasuredSize(t *testing.T) {
+	d := openTest(t)
+	ctx := context.Background()
+	_ = d.UpsertGame(ctx, Game{ID: 1, Title: "Game", Folder: "Game"})
+	_ = d.UpsertProduct(ctx, Product{ID: 1, GameID: 1, Title: "Game"})
+	onDisk := map[string]bool{"Game/windows/setup.exe": true}
+	exists := func(p string) bool { return onDisk[p] }
+	f := File{GameID: 1, ProductID: 1, Kind: "installer", OS: "windows", Language: "en", GogID: "en1installer0", Name: "Game", Version: "1.0", Size: 108003328, Downlink: "x", RelDir: "windows"}
+	res, err := d.UpsertDesiredFile(ctx, f, exists)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The transfer learns the real size, then finishes.
+	if err := d.SetFileResolved(ctx, res.ID, "setup.exe", "Game/windows/setup.exe", "", 107911234); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetFileDone(ctx, res.ID, "Game/windows/setup.exe", 107911234); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		res2, err := d.UpsertDesiredFile(ctx, f, exists)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := d.GetFile(ctx, res2.ID)
+		if res2.Updated || got.Status != StatusDone || got.Size != 107911234 || got.ManifestSize != 108003328 {
+			t.Fatalf("sync %d with an unchanged manifest: updated=%v %+v", i, res2.Updated, got)
+		}
+	}
+	// A manifest without a size must not wipe the measured size either.
+	noSize := f
+	noSize.Size = 0
+	res3, _ := d.UpsertDesiredFile(ctx, noSize, exists)
+	if got, _ := d.GetFile(ctx, res3.ID); res3.Updated || got.Size != 107911234 {
+		t.Errorf("manifest without size: updated=%v %+v", res3.Updated, got)
+	}
+	// Rows from before manifest_size existed have 0 there: no change until known.
+	if _, err := d.ExecContext(ctx, `UPDATE files SET manifest_size = 0 WHERE id = ?`, res.ID); err != nil {
+		t.Fatal(err)
+	}
+	res4, _ := d.UpsertDesiredFile(ctx, f, exists)
+	if got, _ := d.GetFile(ctx, res4.ID); res4.Updated || got.Status != StatusDone || got.ManifestSize != 108003328 {
+		t.Errorf("legacy row: updated=%v %+v", res4.Updated, got)
+	}
+	// A different manifest size is a real change.
+	bigger := f
+	bigger.Size = 109051904
+	res5, _ := d.UpsertDesiredFile(ctx, bigger, exists)
+	if got, _ := d.GetFile(ctx, res5.ID); !res5.Updated || got.Status != StatusPending || got.PreviousPath != "Game/windows/setup.exe" || got.Size != 109051904 {
+		t.Errorf("changed manifest size: updated=%v %+v", res5.Updated, got)
+	}
+	// Reactivating a kept file compares manifest sizes too.
+	if err := d.SetFileDone(ctx, res.ID, "Game/windows/setup.exe", 108900000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.DeactivateOtherFiles(ctx, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	res6, _ := d.UpsertDesiredFile(ctx, bigger, exists)
+	if got, _ := d.GetFile(ctx, res6.ID); got.Status != StatusDone || got.Size != 108900000 {
+		t.Errorf("reactivated unchanged file should stay done with its measured size: %+v", got)
+	}
+}
+
+// A new build must also be fetched for a file whose previous build failed for
+// good, and a kept (inactive) older build must be replaced, not orphaned.
+func TestNewVersionSupersedesErrorsAndKeptCopies(t *testing.T) {
+	d := openTest(t)
+	ctx := context.Background()
+	_ = d.UpsertGame(ctx, Game{ID: 1, Title: "Game", Folder: "Game"})
+	_ = d.UpsertProduct(ctx, Product{ID: 1, GameID: 1, Title: "Game"})
+	onDisk := map[string]bool{}
+	exists := func(p string) bool { return onDisk[p] }
+	f := File{GameID: 1, ProductID: 1, Kind: "installer", OS: "windows", Language: "en", GogID: "en1installer0", Name: "Game", Version: "1.0", Size: 100, Downlink: "x", RelDir: "windows"}
+	res, _ := d.UpsertDesiredFile(ctx, f, exists)
+	if err := d.SetFileError(ctx, res.ID, "HTTP 403", 0); err != nil {
+		t.Fatal(err)
+	}
+	// Same version again: stays failed (the user has to retry).
+	same, _ := d.UpsertDesiredFile(ctx, f, exists)
+	if got, _ := d.GetFile(ctx, same.ID); same.Updated || got.Status != StatusError {
+		t.Errorf("unchanged failed file: updated=%v %+v", same.Updated, got)
+	}
+	// New version: queued again with a clean slate.
+	f.Version = "1.1"
+	upd, _ := d.UpsertDesiredFile(ctx, f, exists)
+	if got, _ := d.GetFile(ctx, upd.ID); !upd.Updated || got.Status != StatusPending || got.Error != "" || got.Attempts != 0 {
+		t.Errorf("new version of a failed file: updated=%v %+v", upd.Updated, got)
+	}
+
+	// Downloaded, then kept (inactive) after a settings change, then wanted again
+	// at a newer version: the old copy is remembered so it gets replaced.
+	if err := d.SetFileDone(ctx, res.ID, "Game/windows/setup_1.1.exe", 110); err != nil {
+		t.Fatal(err)
+	}
+	onDisk["Game/windows/setup_1.1.exe"] = true
+	if _, err := d.DeactivateOtherFiles(ctx, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.Version = "1.2"
+	f.Size = 120
+	re, _ := d.UpsertDesiredFile(ctx, f, exists)
+	got, _ := d.GetFile(ctx, re.ID)
+	if !re.Updated || got.Status != StatusPending || got.PreviousPath != "Game/windows/setup_1.1.exe" || !got.Active {
+		t.Errorf("reactivated at a new version: updated=%v %+v", re.Updated, got)
+	}
+}
+
+func TestNormalizeLanguage(t *testing.T) {
+	cases := map[string]string{"en": "en", " EN ": "en", "es_mx": "esmx", "es-MX": "esmx", "esmx": "esmx", "gk": "el", "sb": "sr", "el": "el"}
+	for in, want := range cases {
+		if got := NormalizeLanguage(in); got != want {
+			t.Errorf("NormalizeLanguage(%q) = %q, want %q", in, got, want)
+		}
+	}
+	s := DefaultSettings()
+	s.Languages = []string{"ES_MX", "gk"}
+	if err := s.Normalize(); err != nil || len(s.Languages) != 2 || s.Languages[0] != "esmx" || s.Languages[1] != "el" {
+		t.Errorf("normalized languages = %v (%v)", s.Languages, err)
+	}
+}
+
+// A new build of a file whose last attempt failed must report Changed so the
+// stale partial of the old build is discarded before it is resumed.
+func TestNewBuildOfFailedFileIsReportedAsChanged(t *testing.T) {
+	d := openTest(t)
+	ctx := context.Background()
+	_ = d.UpsertGame(ctx, Game{ID: 1, Title: "Game", Folder: "Game"})
+	_ = d.UpsertProduct(ctx, Product{ID: 1, GameID: 1, Title: "Game"})
+	exists := func(string) bool { return false }
+	f := File{GameID: 1, ProductID: 1, Kind: "extra", GogID: "5001", Name: "Soundtrack", Size: 100, Downlink: "x", RelDir: "extras"}
+	res, _ := d.UpsertDesiredFile(ctx, f, exists)
+	_ = d.SetFileResolved(ctx, res.ID, "soundtrack.zip", "Game/extras/soundtrack.zip", "", 100)
+	_ = d.SetFileError(ctx, res.ID, "stalled", 0)
+	f.Size = 120
+	got, err := d.UpsertDesiredFile(ctx, f, exists)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Changed || got.LocalPath != "Game/extras/soundtrack.zip" {
+		t.Errorf("expected Changed with the old path, got %+v", got)
+	}
+	// Deferring keeps the file queued without using up an attempt.
+	if err := d.DeferFile(ctx, res.ID, "no session", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := d.GetFile(ctx, res.ID)
+	if row.Status != StatusPending || row.Attempts != 0 || row.Error != "no session" || row.NextAttemptAt.Before(time.Now().Add(30*time.Second)) {
+		t.Errorf("deferred file: %+v", row)
 	}
 }

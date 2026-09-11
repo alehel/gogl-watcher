@@ -30,6 +30,7 @@ ENV DATA_DIR=/data \
 VOLUME ["/data", "/library"]
 EXPOSE 8080
 USER gogl
+# Shell form so PORT (a documented runtime setting) is honoured.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-  CMD wget -qO- http://127.0.0.1:8080/api/status >/dev/null || exit 1
+  CMD wget -qO- "http://127.0.0.1:${PORT:-8080}/api/status" >/dev/null || exit 1
 ENTRYPOINT ["/usr/local/bin/gogl-watcher"]

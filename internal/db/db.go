@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS files (
   name TEXT NOT NULL DEFAULT '',
   version TEXT NOT NULL DEFAULT '',
   size INTEGER NOT NULL DEFAULT 0,
+  manifest_size INTEGER NOT NULL DEFAULT 0,
   downlink TEXT NOT NULL,
   rel_dir TEXT NOT NULL DEFAULT '',
   filename TEXT NOT NULL DEFAULT '',
@@ -120,6 +121,9 @@ func (d *DB) migrate() error {
 		return err
 	}
 	if err := d.addColumn("games", "selected", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := d.addColumn("files", "manifest_size", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	return d.migrateDownloadMode()
@@ -248,7 +252,7 @@ func (s *Settings) Normalize() error {
 	seen = map[string]bool{}
 	var langs []string
 	for _, l := range s.Languages {
-		l = strings.ToLower(strings.TrimSpace(l))
+		l = NormalizeLanguage(l)
 		if l == "" {
 			continue
 		}
@@ -277,6 +281,32 @@ func (s *Settings) Normalize() error {
 		return fmt.Errorf("download_mode must be %q or %q", DownloadAll, DownloadSelected)
 	}
 	return nil
+}
+
+// NormalizeLanguage brings a language code into the form settings use, so that
+// codes from the picker and codes from GOG's installer manifests compare equal:
+// lower case, no separators ("es_mx" and "es-MX" become "esmx"), and GOG's
+// legacy codes for Greek ("gk") and Serbian ("sb") folded onto "el" and "sr".
+func NormalizeLanguage(code string) string {
+	c := strings.ToLower(strings.TrimSpace(code))
+	c = strings.NewReplacer("-", "", "_", "").Replace(c)
+	switch c {
+	case "gk":
+		return "el"
+	case "sb":
+		return "sr"
+	}
+	return c
+}
+
+// SamePlan reports whether s and o would plan the same files, i.e. differ only
+// in options that do not affect which files are wanted (concurrency, speed,
+// interval, pause).
+func (s Settings) SamePlan(o Settings) bool {
+	return s.DownloadMode == o.DownloadMode &&
+		strings.Join(s.Platforms, ",") == strings.Join(o.Platforms, ",") &&
+		strings.Join(s.Languages, ",") == strings.Join(o.Languages, ",") &&
+		s.LanguageFallback == o.LanguageFallback && s.IncludeDLC == o.IncludeDLC && s.IncludeExtras == o.IncludeExtras
 }
 
 // SelectedOnly reports whether only explicitly selected games are downloaded.
@@ -475,7 +505,8 @@ func (d *DB) GetGame(ctx context.Context, id int64) (*Game, error) {
 	}
 	defer rows.Close()
 	if !rows.Next() {
-		return nil, nil
+		// A failed read must not look like a missing game.
+		return nil, rows.Err()
 	}
 	g, err := scanGame(rows)
 	if err != nil {
@@ -666,7 +697,8 @@ type File struct {
 	GogID         string
 	Name          string
 	Version       string
-	Size          int64
+	Size          int64 // best known size: GOG's manifest until the transfer measured it
+	ManifestSize  int64 // size as reported by GOG's manifest at the last sync (0 = unknown)
 	Downlink      string
 	RelDir        string
 	Filename      string
@@ -682,7 +714,7 @@ type File struct {
 	UpdatedAt     time.Time
 }
 
-const fileSelect = `SELECT id, game_id, product_id, kind, os, language, gog_id, name, version, size, downlink, rel_dir, filename,
+const fileSelect = `SELECT id, game_id, product_id, kind, os, language, gog_id, name, version, size, manifest_size, downlink, rel_dir, filename,
 	local_path, previous_path, md5, status, active, error, attempts, next_attempt_at, downloaded_at, updated_at FROM files`
 
 func scanFile(rows *sql.Rows) (File, error) {
@@ -691,7 +723,7 @@ func scanFile(rows *sql.Rows) (File, error) {
 	var next int64
 	var dl sql.NullInt64
 	var upd int64
-	err := rows.Scan(&f.ID, &f.GameID, &f.ProductID, &f.Kind, &f.OS, &f.Language, &f.GogID, &f.Name, &f.Version, &f.Size,
+	err := rows.Scan(&f.ID, &f.GameID, &f.ProductID, &f.Kind, &f.OS, &f.Language, &f.GogID, &f.Name, &f.Version, &f.Size, &f.ManifestSize,
 		&f.Downlink, &f.RelDir, &f.Filename, &f.LocalPath, &f.PreviousPath, &f.MD5, &f.Status, &active, &f.Error,
 		&f.Attempts, &next, &dl, &upd)
 	if err != nil {
@@ -797,6 +829,11 @@ type UpsertFileResult struct {
 	ID       int64
 	Inserted bool
 	Updated  bool // an existing done file got a new version/size
+	// Changed is set when a file that was already pending now points at another
+	// version or download link, so a transfer started for the old one is stale.
+	Changed bool
+	// LocalPath is the path the row had before this update (empty if unresolved).
+	LocalPath string
 }
 
 // UpsertDesiredFile inserts a wanted file, or refreshes an existing row. If the row
@@ -809,9 +846,9 @@ func (d *DB) UpsertDesiredFile(ctx context.Context, f File, localExists func(pat
 		return UpsertFileResult{}, err
 	}
 	if len(existing) == 0 {
-		res, err := d.ExecContext(ctx, `INSERT INTO files(game_id, product_id, kind, os, language, gog_id, name, version, size, downlink, rel_dir, status, active, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?)`,
-			f.GameID, f.ProductID, f.Kind, f.OS, f.Language, f.GogID, f.Name, f.Version, f.Size, f.Downlink, f.RelDir, now)
+		res, err := d.ExecContext(ctx, `INSERT INTO files(game_id, product_id, kind, os, language, gog_id, name, version, size, manifest_size, downlink, rel_dir, status, active, updated_at)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?)`,
+			f.GameID, f.ProductID, f.Kind, f.OS, f.Language, f.GogID, f.Name, f.Version, f.Size, f.Size, f.Downlink, f.RelDir, now)
 		if err != nil {
 			return UpsertFileResult{}, err
 		}
@@ -822,35 +859,61 @@ func (d *DB) UpsertDesiredFile(ctx context.Context, f File, localExists func(pat
 	status := e.Status
 	prev := e.PreviousPath
 	updated := false
+	// GOG's manifest sizes are not byte-exact, and the downloader replaces size
+	// with the real byte count once it knows it, so a size change is only ever
+	// detected between two manifest sizes. A stored manifest size of 0 is unknown
+	// (rows from before the column existed, manifests without a size) and never
+	// counts as a change.
+	sizeChanged := f.Size > 0 && e.ManifestSize > 0 && e.ManifestSize != f.Size
+	changed := e.Version != f.Version || sizeChanged
 	if !e.Active || status == StatusInactive {
-		// Re-activated by a settings change: keep the file if it is still on disk.
-		if e.LocalPath != "" && localExists(e.LocalPath) && (e.Version == f.Version && e.Size == f.Size) {
+		// Re-activated by a settings change: keep the file if it is still on disk
+		// and is really this version (a remembered previous_path means the copy on
+		// disk is an older build that was waiting to be replaced).
+		kept := e.LocalPath != "" && e.PreviousPath == "" && localExists(e.LocalPath)
+		if kept && !changed {
 			status = StatusDone
 		} else {
 			status = StatusPending
+			if kept {
+				// The kept copy is an older build: replace it once the new one is in place.
+				prev = e.LocalPath
+				updated = true
+			}
 		}
 	}
-	changed := e.Version != f.Version || (f.Size > 0 && e.Size != f.Size)
-	if status == StatusDone && changed {
+	if (status == StatusDone || status == StatusError) && changed {
+		// A new build also supersedes a failed attempt at the old one.
+		if status == StatusDone {
+			prev = e.LocalPath
+		}
 		status = StatusPending
-		prev = e.LocalPath
 		updated = true
 	}
 	if status == StatusDone && e.LocalPath != "" && !localExists(e.LocalPath) {
 		status = StatusPending
 	}
-	_, err = d.ExecContext(ctx, `UPDATE files SET game_id = ?, os = ?, language = ?, name = ?, version = ?, size = ?, downlink = ?, rel_dir = ?,
+	size := f.Size
+	if !changed && e.LocalPath != "" && e.Size > 0 {
+		// The transfer already measured the real size; the manifest is an estimate.
+		size = e.Size
+	}
+	_, err = d.ExecContext(ctx, `UPDATE files SET game_id = ?, os = ?, language = ?, name = ?, version = ?, size = ?, manifest_size = ?, downlink = ?, rel_dir = ?,
 		status = ?, active = 1, previous_path = ?, error = CASE WHEN ? = 'pending' AND status <> 'pending' THEN '' ELSE error END,
 		attempts = CASE WHEN ? = 'pending' AND status <> 'pending' THEN 0 ELSE attempts END, next_attempt_at = 0, updated_at = ? WHERE id = ?`,
-		f.GameID, f.OS, f.Language, f.Name, f.Version, f.Size, f.Downlink, f.RelDir, status, prev, status, status, now, e.ID)
+		f.GameID, f.OS, f.Language, f.Name, f.Version, size, f.Size, f.Downlink, f.RelDir, status, prev, status, status, now, e.ID)
 	if err != nil {
 		return UpsertFileResult{}, err
 	}
-	return UpsertFileResult{ID: e.ID, Updated: updated}, nil
+	// A failed row keeps its partial file too, so a new build must discard it as well.
+	changedWhilePending := e.Active && (e.Status == StatusPending || e.Status == StatusError) && (changed || e.Downlink != f.Downlink)
+	return UpsertFileResult{ID: e.ID, Updated: updated, Changed: changedWhilePending, LocalPath: e.LocalPath}, nil
 }
 
 // DeactivateOtherFiles marks active files of the game not in keepIDs as inactive
-// (if downloaded) or deletes them (if never downloaded). Returns the deactivated files.
+// (if a downloaded copy exists: the file itself, or a previous version kept while
+// an update was pending) or deletes them (if never downloaded). Returns the
+// deactivated files.
 func (d *DB) DeactivateOtherFiles(ctx context.Context, gameID int64, keepIDs []int64) ([]File, error) {
 	keep := map[int64]bool{}
 	for _, id := range keepIDs {
@@ -866,7 +929,7 @@ func (d *DB) DeactivateOtherFiles(ctx context.Context, gameID int64, keepIDs []i
 		if keep[f.ID] {
 			continue
 		}
-		if f.Status == StatusDone && f.LocalPath != "" {
+		if (f.Status == StatusDone && f.LocalPath != "") || f.PreviousPath != "" {
 			if _, err := d.ExecContext(ctx, `UPDATE files SET active = 0, status = 'inactive', updated_at = ? WHERE id = ?`, now, f.ID); err != nil {
 				return nil, err
 			}
@@ -907,6 +970,21 @@ func (d *DB) SetFileDone(ctx context.Context, id int64, localPath string, size i
 	return err
 }
 
+// CompleteFile marks a download complete like SetFileDone, but only if the row
+// still describes the download that was made (same download link and version).
+// It reports false when the file was updated on GOG in the meantime; the row is
+// then left pending for the new version.
+func (d *DB) CompleteFile(ctx context.Context, id int64, localPath string, size int64, downlink, version string) (bool, error) {
+	now := time.Now().UnixMilli()
+	res, err := d.ExecContext(ctx, `UPDATE files SET status = 'done', local_path = ?, size = ?, previous_path = '', error = '', attempts = 0,
+		next_attempt_at = 0, downloaded_at = ?, updated_at = ? WHERE id = ? AND downlink = ? AND version = ?`, localPath, size, now, now, id, downlink, version)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // SetFileError records a failed attempt. If retryAfter is zero the file goes to the error state.
 func (d *DB) SetFileError(ctx context.Context, id int64, msg string, retryAfter time.Duration) error {
 	now := time.Now()
@@ -917,6 +995,15 @@ func (d *DB) SetFileError(ctx context.Context, id int64, msg string, retryAfter 
 	}
 	_, err := d.ExecContext(ctx, `UPDATE files SET status = 'error', error = ?, attempts = attempts + 1, next_attempt_at = 0, updated_at = ? WHERE id = ?`,
 		msg, now.UnixMilli(), id)
+	return err
+}
+
+// DeferFile keeps a pending file queued but not before retryAfter, without
+// counting a failed attempt: for failures of the GOG session rather than the file.
+func (d *DB) DeferFile(ctx context.Context, id int64, msg string, retryAfter time.Duration) error {
+	now := time.Now()
+	_, err := d.ExecContext(ctx, `UPDATE files SET status = 'pending', error = ?, next_attempt_at = ?, updated_at = ? WHERE id = ? AND active = 1`,
+		msg, now.Add(retryAfter).UnixMilli(), now.UnixMilli(), id)
 	return err
 }
 
