@@ -289,7 +289,14 @@ func (m *Manager) fail(ctx context.Context, t *transfer, title string, err error
 		attempts = f.Attempts
 	}
 	var ae *gog.AuthError
-	permanent := errors.As(err, &ae) && ae.Permanent
+	if errors.As(err, &ae) {
+		// The GOG session failed, not the file: keep it queued for when the user
+		// has re-authorized, without using up an attempt.
+		m.log.Warn("download needs a valid GOG session, will retry", "game", title, "file", firstNonEmpty(t.filename, t.file.Name), "error", err)
+		_ = m.db.DeferFile(ctx, t.file.ID, err.Error(), time.Minute)
+		return
+	}
+	permanent := false
 	var he *gog.HTTPError
 	if errors.As(err, &he) && (he.Status == 403 || he.Status == 404) {
 		permanent = true
@@ -351,6 +358,11 @@ func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error
 		expectedSize = dl.Length
 	}
 	rel := library.LocalRelPath(game.Folder, f.RelDir, filename)
+	if f.LocalPath != "" && f.LocalPath != rel {
+		// The file used to be planned elsewhere (language folder, renamed DLC);
+		// a partial left there would never be picked up again.
+		m.paths.RemovePart(f.LocalPath)
+	}
 	abs := m.paths.Abs(rel)
 	partPath = abs + ".part"
 	m.mu.Lock()
@@ -467,18 +479,14 @@ func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error
 		}
 		return err
 	}
-	if f.PreviousPath != "" && f.PreviousPath != rel {
-		if err := m.paths.Remove(f.PreviousPath); err == nil {
-			m.log.Info("removed superseded file", "path", f.PreviousPath)
-		}
-	}
 	m.log.Info("download complete", "game", game.Title, "file", filename, "size", total)
 	return nil
 }
 
 // complete records the file as done unless a sync replaced its version or download
 // link while it was transferring, in which case the bytes on disk belong to the
-// old build and must not be presented as the new one.
+// old build and must not be presented as the new one. On success the superseded
+// previous version, if any, is removed.
 func (m *Manager) complete(ctx context.Context, f db.File, rel string, size int64, title string) (bool, error) {
 	ok, err := m.db.CompleteFile(ctx, f.ID, rel, size, f.Downlink, f.Version)
 	if err != nil {
@@ -486,8 +494,16 @@ func (m *Manager) complete(ctx context.Context, f db.File, rel string, size int6
 	}
 	if !ok {
 		m.log.Info("file changed on GOG during download, fetching the new version", "game", title, "file", f.Name)
+		return false, nil
 	}
-	return ok, nil
+	if f.PreviousPath != "" && f.PreviousPath != rel {
+		if err := m.paths.Remove(f.PreviousPath); err != nil {
+			m.log.Warn("could not remove superseded file", "path", f.PreviousPath, "error", err)
+		} else {
+			m.log.Info("removed superseded file", "path", f.PreviousPath)
+		}
+	}
+	return true, nil
 }
 
 // copy streams src to dst, enforcing the speed limit and aborting the transfer

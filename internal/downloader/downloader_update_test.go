@@ -5,12 +5,14 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/alehel/gogl-watcher/internal/db"
 	"github.com/alehel/gogl-watcher/internal/gog"
+	"github.com/alehel/gogl-watcher/internal/library"
 )
 
 // resize makes every mock file `size` bytes so a paced transfer takes several reads.
@@ -136,5 +138,52 @@ func TestStalledTransferIsAbandonedAndRetried(t *testing.T) {
 	}
 	if _, ok := mgr.ProgressFor(target.ID); ok {
 		t.Error("stalled transfer still occupies a download slot")
+	}
+}
+
+// A file that is already complete on disk (say, after the process died between the
+// rename and the database update) still replaces the previous version.
+func TestAlreadyPresentFileRemovesPreviousVersion(t *testing.T) {
+	d, m, paths, syncer := setup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	settings := db.DefaultSettings()
+	settings.Platforms = []string{"windows"}
+	settings.ContentChosen = true
+	settings.MaxConcurrentDownloads = 1
+	_ = d.SaveSettings(ctx, settings)
+	_ = d.SetSetupComplete(ctx, true)
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	next, _ := d.NextPendingFiles(ctx, 1, nil)
+	target := next[0]
+	game, _ := d.GetGame(ctx, target.GameID)
+	// Pretend an older build was downloaded before, and the new one is already on disk.
+	oldRel := library.LocalRelPath(game.Folder, target.RelDir, "old_build.bin")
+	_ = os.MkdirAll(filepath.Dir(paths.Abs(oldRel)), 0o755)
+	_ = os.WriteFile(paths.Abs(oldRel), []byte("old"), 0o644)
+	if _, err := d.ExecContext(ctx, `UPDATE files SET previous_path = ? WHERE id = ?`, oldRel, target.ID); err != nil {
+		t.Fatal(err)
+	}
+	newRel := library.LocalRelPath(game.Folder, target.RelDir, "file_"+target.GogID+".bin")
+	data := make([]byte, target.Size)
+	for i := range data {
+		data[i] = byte(int64(i) * 31 % 251)
+	}
+	_ = os.WriteFile(paths.Abs(newRel), data, 0o644)
+
+	mgr := New(d, m, paths, slog.Default())
+	mgr.Configure(settings, true)
+	go mgr.Run(ctx)
+	waitFor(t, 20*time.Second, func() bool {
+		f, _ := d.GetFile(ctx, target.ID)
+		return f != nil && f.Status == db.StatusDone
+	})
+	if _, err := os.Stat(paths.Abs(oldRel)); err == nil {
+		t.Errorf("previous version %s still on disk after the new build was found present", oldRel)
+	}
+	if _, err := os.Stat(paths.Abs(newRel)); err != nil {
+		t.Errorf("new build missing: %v", err)
 	}
 }
