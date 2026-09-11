@@ -148,23 +148,36 @@ func (c *Client) ExchangeCode(ctx context.Context, input string) (*User, error) 
 	c.mu.Lock()
 	c.token = t
 	c.mu.Unlock()
+	if err := c.store.Save(ctx, t); err != nil {
+		return nil, err
+	}
 	// Fetch the username; failure here is not fatal.
+	username, userID := "", t.UserID
 	if u, err := c.fetchUser(ctx); err == nil {
-		t.Username = u.Username
+		username = u.Username
 		if u.ID != "" {
-			t.UserID = u.ID
+			userID = u.ID
 		}
 	} else {
 		c.log.Warn("could not fetch user data", "error", err)
 	}
+	// Annotate the live token rather than the copy from before the fetch: the
+	// fetch itself may have refreshed (and rotated) the tokens, or a logout may
+	// have happened meanwhile.
 	c.mu.Lock()
-	c.token = t
+	if c.token.RefreshToken == "" {
+		c.mu.Unlock()
+		return nil, &AuthError{Msg: "disconnected while authorizing", Permanent: true}
+	}
+	c.token.Username = username
+	c.token.UserID = userID
+	live := c.token
 	c.mu.Unlock()
-	if err := c.store.Save(ctx, t); err != nil {
+	if err := c.store.Save(ctx, live); err != nil {
 		return nil, err
 	}
-	c.log.Info("authorized with GOG", "user", t.Username)
-	return &User{ID: t.UserID, Username: t.Username}, nil
+	c.log.Info("authorized with GOG", "user", live.Username)
+	return &User{ID: live.UserID, Username: live.Username}, nil
 }
 
 func (c *Client) tokenRequest(ctx context.Context, q url.Values) (*tokenResponse, error) {
@@ -175,6 +188,13 @@ func (c *Client) tokenRequest(ctx context.Context, q url.Values) (*tokenResponse
 	req.Header.Set("User-Agent", c.userAgent)
 	resp, err := c.http.Do(req)
 	if err != nil {
+		// The request URL carries the client secret and the refresh token or the
+		// authorization code, and *url.Error prints it. Errors end up in logs, the
+		// database and API responses, so strip the URL.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
 		return nil, fmt.Errorf("token request failed: %w", err)
 	}
 	defer resp.Body.Close()
