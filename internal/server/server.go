@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path"
 	"sort"
 	"strconv"
@@ -67,7 +68,35 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/logs", s.handleLogs)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { writeError(w, 404, "not found") })
 	mux.Handle("/", s.spaHandler())
-	return mux
+	return sameSiteOnly(mux)
+}
+
+// sameSiteOnly rejects state-changing requests that a browser sent from another
+// site. The UI has no login of its own, so this is what keeps a malicious page
+// (on the internet or the LAN) from driving the API through the user's browser.
+// Non-browser clients send neither header and are unaffected.
+func sameSiteOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+		default:
+			if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
+				if site == "cross-site" {
+					writeError(w, http.StatusForbidden, "cross-site requests are not allowed")
+					return
+				}
+			} else if origin := r.Header.Get("Origin"); origin != "" && origin != "null" {
+				// Older browsers: fall back to comparing the origin with the host the
+				// request was addressed to (also as seen by a reverse proxy).
+				u, err := url.Parse(origin)
+				if err != nil || (!strings.EqualFold(u.Host, r.Host) && !strings.EqualFold(u.Host, r.Header.Get("X-Forwarded-Host"))) {
+					writeError(w, http.StatusForbidden, "cross-site requests are not allowed")
+					return
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // ---- helpers ----
@@ -312,6 +341,8 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Log.Info("GOG account disconnected")
+	// No sync can run without a session: drop the scheduled next run from the status.
+	s.Scheduler.Reschedule()
 	w.WriteHeader(204)
 }
 
