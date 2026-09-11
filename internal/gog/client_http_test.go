@@ -174,3 +174,46 @@ func TestExchangeRefreshAndList(t *testing.T) {
 		t.Errorf("client should report an auth error, got authenticated=%v err=%q", c.Authenticated(), c.AuthError())
 	}
 }
+
+// The content system answers with every build it has, in no promised order and
+// including private ones, and says nothing at all for products Galaxy does not
+// cover.
+func TestLatestBuild(t *testing.T) {
+	var authorized bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/content-system.gog.com/products/1/os/windows/builds", func(w http.ResponseWriter, r *http.Request) {
+		authorized = r.Header.Get("Authorization") != ""
+		fmt.Fprint(w, `{"total_count":3,"items":[
+			{"build_id":"100","version_name":"1.0","date_published":"2024-01-02T10:00:00+0000","public":true},
+			{"build_id":"300","version_name":"3.0","date_published":"2024-03-02T10:00:00+0000","public":false},
+			{"build_id":"200","version_name":"2.0","date_published":"2024-02-02T10:00:00+0000","public":true}]}`)
+	})
+	// "mac" is "osx" in the content system's paths.
+	mux.HandleFunc("/content-system.gog.com/products/1/os/osx/builds", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"total_count":1,"items":[{"build_id":"55","version_name":"1.0","date_published":"2024-01-02T10:00:00+0000","public":true}]}`)
+	})
+	mux.HandleFunc("/content-system.gog.com/products/2/os/linux/builds", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+	})
+	c, srv := newTestClient(t, mux)
+	defer srv.Close()
+	ctx := context.Background()
+
+	b, err := c.LatestBuild(ctx, 1, "windows")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b == nil || b.ID != "200" || b.VersionName != "2.0" {
+		t.Errorf("newest public build expected, got %+v", b)
+	}
+	if authorized {
+		t.Error("the build list is public and must not carry the account's token")
+	}
+	if b, err := c.LatestBuild(ctx, 1, "mac"); err != nil || b == nil || b.ID != "55" {
+		t.Errorf("mac build: %+v %v", b, err)
+	}
+	// No builds for this product: not an error, just nothing to compare against.
+	if b, err := c.LatestBuild(ctx, 2, "linux"); err != nil || b != nil {
+		t.Errorf("a product without builds should give (nil, nil), got %+v %v", b, err)
+	}
+}

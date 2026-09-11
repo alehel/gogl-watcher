@@ -29,6 +29,9 @@ const (
 	authBase  = "https://auth.gog.com"
 	embedBase = "https://embed.gog.com"
 	apiBase   = "https://api.gog.com"
+	// contentBase serves the Galaxy content system: build lists and depot
+	// manifests. It needs no authorization.
+	contentBase = "https://content-system.gog.com"
 )
 
 // Token is a stored OAuth token set.
@@ -524,6 +527,63 @@ func (c *Client) ProductDetails(ctx context.Context, id int64) (*Product, error)
 		return nil, err
 	}
 	return &p, nil
+}
+
+// buildOS maps a platform name used by the application onto the one the content
+// system uses in its paths.
+func buildOS(os string) string {
+	if os == "mac" {
+		return "osx"
+	}
+	return os
+}
+
+// LatestBuild implements API.
+func (c *Client) LatestBuild(ctx context.Context, productID int64, os string) (*Build, error) {
+	var resp struct {
+		Items []struct {
+			BuildID       FlexString `json:"build_id"`
+			VersionName   string     `json:"version_name"`
+			DatePublished string     `json:"date_published"`
+			Public        bool       `json:"public"`
+		} `json:"items"`
+	}
+	u := fmt.Sprintf("%s/products/%d/os/%s/builds?generation=2", contentBase, productID, buildOS(os))
+	if err := c.getJSON(ctx, u, false, &resp); err != nil {
+		var he *HTTPError
+		if errors.As(err, &he) && he.Status == http.StatusNotFound {
+			// Nothing is published for this product and OS, which is not a failure.
+			return nil, nil
+		}
+		return nil, err
+	}
+	var latest *Build
+	for _, it := range resp.Items {
+		if !it.Public || it.BuildID == "" {
+			continue
+		}
+		b := Build{ID: string(it.BuildID), VersionName: it.VersionName, Public: true, PublishedAt: parseBuildTime(it.DatePublished)}
+		// GOG lists the newest build first, but the order is not promised, so the
+		// publication date decides where there is one.
+		if latest == nil || b.PublishedAt.After(latest.PublishedAt) {
+			cur := b
+			latest = &cur
+		}
+	}
+	return latest, nil
+}
+
+// parseBuildTime reads the publication date of a build. The content system
+// writes its zone offset without a colon, which is not RFC 3339, but both
+// spellings turn up. An unreadable date is left at zero, which keeps the order
+// GOG listed the builds in.
+func parseBuildTime(s string) time.Time {
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05-0700"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 // ResolveDownlink implements API.

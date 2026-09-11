@@ -307,7 +307,9 @@ func TestSelectedModeDownloadsOnlySelectedGames(t *testing.T) {
 	var detail map[string]any
 	for time.Now().Before(deadline) {
 		detail = gameByID(t, srv, witcher)
-		if detail["game"].(map[string]any)["files_total"].(float64) > 0 {
+		// Wait for the whole plan, not for its first file: the sync inserts the
+		// rows one at a time and every count in between is a half-written plan.
+		if detail["game"].(map[string]any)["files_total"].(float64) >= 3 {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)

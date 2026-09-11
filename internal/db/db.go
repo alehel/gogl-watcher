@@ -102,11 +102,20 @@ CREATE TABLE IF NOT EXISTS files (
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at INTEGER NOT NULL DEFAULT 0,
   downloaded_at INTEGER,
+  verified_at INTEGER,
   updated_at INTEGER NOT NULL,
   UNIQUE(product_id, kind, gog_id)
 );
 CREATE INDEX IF NOT EXISTS files_game ON files(game_id);
 CREATE INDEX IF NOT EXISTS files_status ON files(status, active);
+CREATE TABLE IF NOT EXISTS game_builds (
+  game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  os TEXT NOT NULL,
+  build_id TEXT NOT NULL,
+  version_name TEXT NOT NULL DEFAULT '',
+  checked_at INTEGER NOT NULL,
+  PRIMARY KEY (game_id, os)
+);
 CREATE TABLE IF NOT EXISTS logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,
@@ -124,6 +133,9 @@ func (d *DB) migrate() error {
 		return err
 	}
 	if err := d.addColumn("files", "manifest_size", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := d.addColumn("files", "verified_at", "INTEGER"); err != nil {
 		return err
 	}
 	return d.migrateDownloadMode()
@@ -468,6 +480,19 @@ type Game struct {
 	UpdatedAt       time.Time
 }
 
+// WorksOn reports whether GOG lists the game as running on a platform.
+func (g Game) WorksOn(os string) bool {
+	switch os {
+	case "windows":
+		return g.WorksWindows
+	case "mac":
+		return g.WorksMac
+	case "linux":
+		return g.WorksLinux
+	}
+	return false
+}
+
 // GameStats aggregates the active files of a game.
 type GameStats struct {
 	FilesTotal   int
@@ -615,6 +640,38 @@ func (d *DB) SetGameDetailsSynced(ctx context.Context, id int64, errMsg string) 
 	return err
 }
 
+// GameBuild is the newest Galaxy build seen for a game and OS.
+type GameBuild struct {
+	BuildID     string
+	VersionName string
+	CheckedAt   time.Time
+}
+
+// GetGameBuild returns the build last recorded for a game and OS, or nil when
+// none was ever recorded.
+func (d *DB) GetGameBuild(ctx context.Context, gameID int64, os string) (*GameBuild, error) {
+	var b GameBuild
+	var checked int64
+	err := d.QueryRowContext(ctx, `SELECT build_id, version_name, checked_at FROM game_builds WHERE game_id = ? AND os = ?`,
+		gameID, os).Scan(&b.BuildID, &b.VersionName, &checked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	b.CheckedAt = time.UnixMilli(checked)
+	return &b, nil
+}
+
+// SetGameBuild records the build now published for a game and OS.
+func (d *DB) SetGameBuild(ctx context.Context, gameID int64, os, buildID, versionName string) error {
+	_, err := d.ExecContext(ctx, `INSERT INTO game_builds(game_id, os, build_id, version_name, checked_at) VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(game_id, os) DO UPDATE SET build_id = excluded.build_id, version_name = excluded.version_name, checked_at = excluded.checked_at`,
+		gameID, os, buildID, versionName, time.Now().UnixMilli())
+	return err
+}
+
 // GameStatsAll returns per-game aggregates over active files.
 func (d *DB) GameStatsAll(ctx context.Context) (map[int64]GameStats, error) {
 	rows, err := d.QueryContext(ctx, `SELECT game_id,
@@ -711,21 +768,24 @@ type File struct {
 	Attempts      int
 	NextAttemptAt time.Time
 	DownloadedAt  *time.Time
-	UpdatedAt     time.Time
+	// VerifiedAt is when the local copy was last compared against GOG's checksum
+	// (nil = never).
+	VerifiedAt *time.Time
+	UpdatedAt  time.Time
 }
 
 const fileSelect = `SELECT id, game_id, product_id, kind, os, language, gog_id, name, version, size, manifest_size, downlink, rel_dir, filename,
-	local_path, previous_path, md5, status, active, error, attempts, next_attempt_at, downloaded_at, updated_at FROM files`
+	local_path, previous_path, md5, status, active, error, attempts, next_attempt_at, downloaded_at, verified_at, updated_at FROM files`
 
 func scanFile(rows *sql.Rows) (File, error) {
 	var f File
 	var active int
 	var next int64
-	var dl sql.NullInt64
+	var dl, ver sql.NullInt64
 	var upd int64
 	err := rows.Scan(&f.ID, &f.GameID, &f.ProductID, &f.Kind, &f.OS, &f.Language, &f.GogID, &f.Name, &f.Version, &f.Size, &f.ManifestSize,
 		&f.Downlink, &f.RelDir, &f.Filename, &f.LocalPath, &f.PreviousPath, &f.MD5, &f.Status, &active, &f.Error,
-		&f.Attempts, &next, &dl, &upd)
+		&f.Attempts, &next, &dl, &ver, &upd)
 	if err != nil {
 		return f, err
 	}
@@ -736,6 +796,10 @@ func scanFile(rows *sql.Rows) (File, error) {
 	if dl.Valid {
 		t := time.UnixMilli(dl.Int64)
 		f.DownloadedAt = &t
+	}
+	if ver.Valid {
+		t := time.UnixMilli(ver.Int64)
+		f.VerifiedAt = &t
 	}
 	f.UpdatedAt = time.UnixMilli(upd)
 	return f, nil
@@ -836,10 +900,30 @@ type UpsertFileResult struct {
 	LocalPath string
 }
 
+// Verifier answers whether a file that was already downloaded really differs
+// from the one GOG now offers. stored is the row as it stands, next the file as
+// GOG describes it now, and hint what comparing their metadata concluded.
+// Returning an error means the answer is unknown and the hint is used.
+//
+// It exists because GOG's installer metadata is a weak signal in both
+// directions: version strings are bumped for rebuilds that change nothing, and
+// installers are sometimes replaced without the version or the manifest size
+// moving at all. Answering from a checksum costs a request or two, so a
+// Verifier decides for itself which files are worth the trouble.
+type Verifier func(ctx context.Context, stored File, next File, hint bool) (bool, error)
+
 // UpsertDesiredFile inserts a wanted file, or refreshes an existing row. If the row
 // was done and the version/size changed, it becomes pending again and the old path is
-// remembered so it can be removed after the new download succeeds.
+// remembered so it can be removed after the new download succeeds. It trusts GOG's
+// metadata; UpsertDesiredFileVerified can confirm a change before acting on it.
 func (d *DB) UpsertDesiredFile(ctx context.Context, f File, localExists func(path string) bool) (UpsertFileResult, error) {
+	return d.UpsertDesiredFileVerified(ctx, f, localExists, nil)
+}
+
+// UpsertDesiredFileVerified is UpsertDesiredFile with verify consulted, where it
+// can answer, about whether a downloaded file really changed. A nil verify
+// behaves exactly like UpsertDesiredFile.
+func (d *DB) UpsertDesiredFileVerified(ctx context.Context, f File, localExists func(path string) bool, verify Verifier) (UpsertFileResult, error) {
 	now := time.Now().UnixMilli()
 	existing, err := d.queryFiles(ctx, `WHERE product_id = ? AND kind = ? AND gog_id = ?`, f.ProductID, f.Kind, f.GogID)
 	if err != nil {
@@ -866,11 +950,21 @@ func (d *DB) UpsertDesiredFile(ctx context.Context, f File, localExists func(pat
 	// counts as a change.
 	sizeChanged := f.Size > 0 && e.ManifestSize > 0 && e.ManifestSize != f.Size
 	changed := e.Version != f.Version || sizeChanged
-	if !e.Active || status == StatusInactive {
-		// Re-activated by a settings change: keep the file if it is still on disk
-		// and is really this version (a remembered previous_path means the copy on
-		// disk is an older build that was waiting to be replaced).
-		kept := e.LocalPath != "" && e.PreviousPath == "" && localExists(e.LocalPath)
+	// Re-activated by a settings change: keep the file if it is still on disk
+	// and is really this version (a remembered previous_path means the copy on
+	// disk is an older build that was waiting to be replaced).
+	reactivating := !e.Active || status == StatusInactive
+	kept := reactivating && e.LocalPath != "" && e.PreviousPath == "" && localExists(e.LocalPath)
+	// A copy on disk can be held against GOG's checksum, which is the only
+	// authoritative answer; the metadata comparison above is a guess that can be
+	// wrong in either direction. Nothing else is worth a request: a file that is
+	// not downloaded is fetched whatever the answer would be.
+	if verify != nil && e.MD5 != "" && ((e.Active && status == StatusDone && e.LocalPath != "") || kept) {
+		if got, err := verify(ctx, e, f, changed); err == nil {
+			changed = got
+		}
+	}
+	if reactivating {
 		if kept && !changed {
 			status = StatusDone
 		} else {
@@ -965,8 +1059,10 @@ func (d *DB) SetFileResolved(ctx context.Context, id int64, filename, localPath,
 // SetFileDone marks a download complete.
 func (d *DB) SetFileDone(ctx context.Context, id int64, localPath string, size int64) error {
 	now := time.Now().UnixMilli()
+	// A finished transfer has just been held against GOG's checksum, so it counts
+	// as verified: the rolling re-check belongs to files that have sat on disk.
 	_, err := d.ExecContext(ctx, `UPDATE files SET status = 'done', local_path = ?, size = ?, previous_path = '', error = '', attempts = 0,
-		next_attempt_at = 0, downloaded_at = ?, updated_at = ? WHERE id = ?`, localPath, size, now, now, id)
+		next_attempt_at = 0, downloaded_at = ?, verified_at = ?, updated_at = ? WHERE id = ?`, localPath, size, now, now, now, id)
 	return err
 }
 
@@ -977,12 +1073,19 @@ func (d *DB) SetFileDone(ctx context.Context, id int64, localPath string, size i
 func (d *DB) CompleteFile(ctx context.Context, id int64, localPath string, size int64, downlink, version string) (bool, error) {
 	now := time.Now().UnixMilli()
 	res, err := d.ExecContext(ctx, `UPDATE files SET status = 'done', local_path = ?, size = ?, previous_path = '', error = '', attempts = 0,
-		next_attempt_at = 0, downloaded_at = ?, updated_at = ? WHERE id = ? AND downlink = ? AND version = ?`, localPath, size, now, now, id, downlink, version)
+		next_attempt_at = 0, downloaded_at = ?, verified_at = ?, updated_at = ? WHERE id = ? AND downlink = ? AND version = ?`, localPath, size, now, now, now, id, downlink, version)
 	if err != nil {
 		return false, err
 	}
 	n, err := res.RowsAffected()
 	return n > 0, err
+}
+
+// SetFileVerified records that the local copy was compared against GOG's
+// checksum just now, so the rolling re-check moves on to other files.
+func (d *DB) SetFileVerified(ctx context.Context, id int64) error {
+	_, err := d.ExecContext(ctx, `UPDATE files SET verified_at = ? WHERE id = ?`, time.Now().UnixMilli(), id)
+	return err
 }
 
 // SetFileError records a failed attempt. If retryAfter is zero the file goes to the error state.

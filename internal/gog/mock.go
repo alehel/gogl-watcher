@@ -25,6 +25,12 @@ type Mock struct {
 	Games []MockGame
 	// FailDownlinks contains downlink ids whose resolution fails.
 	FailDownlinks map[string]bool
+	// Builds are the Galaxy builds to report, keyed by "<product id>/<os>".
+	// A missing entry means GOG publishes no build, as for most Linux games.
+	Builds map[string]*Build
+	// Checksums are the MD5 sums to publish, keyed by downlink. A downlink with
+	// no entry has no checksum, which is what GOG does for most extras.
+	Checksums map[string]string
 }
 
 // MockGame is a sample game definition.
@@ -35,7 +41,7 @@ type MockGame struct {
 
 // NewMock creates a mock with the default sample library.
 func NewMock(ctx context.Context, store TokenStore) (*Mock, error) {
-	m := &Mock{store: store, Speed: 6 << 20, FailDownlinks: map[string]bool{}}
+	m := &Mock{store: store, Speed: 6 << 20, FailDownlinks: map[string]bool{}, Builds: map[string]*Build{}, Checksums: map[string]string{}}
 	if store != nil {
 		t, err := store.Load(ctx)
 		if err != nil {
@@ -151,6 +157,24 @@ func (m *Mock) ProductDetails(ctx context.Context, id int64) (*Product, error) {
 	return nil, &HTTPError{Status: 404, URL: fmt.Sprintf("mock://%d", id)}
 }
 
+// SetBuild registers the Galaxy build reported for a product and OS.
+func (m *Mock) SetBuild(productID int64, os, buildID, version string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Builds[fmt.Sprintf("%d/%s", productID, os)] = &Build{ID: buildID, VersionName: version, Public: true, PublishedAt: time.Now()}
+}
+
+func (m *Mock) LatestBuild(ctx context.Context, productID int64, os string) (*Build, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b := m.Builds[fmt.Sprintf("%d/%s", productID, os)]
+	if b == nil {
+		return nil, nil
+	}
+	cp := *b
+	return &cp, nil
+}
+
 func (m *Mock) ResolveDownlink(ctx context.Context, downlink string) (*Downlink, error) {
 	if err := m.requireAuth(); err != nil {
 		return nil, err
@@ -158,10 +182,28 @@ func (m *Mock) ResolveDownlink(ctx context.Context, downlink string) (*Downlink,
 	if m.FailDownlinks[downlink] {
 		return nil, &HTTPError{Status: 403, URL: downlink}
 	}
-	return &Downlink{URL: downlink, ChecksumURL: ""}, nil
+	d := &Downlink{URL: downlink}
+	m.mu.Lock()
+	if _, ok := m.Checksums[downlink]; ok {
+		d.ChecksumURL = mockChecksumPrefix + downlink
+	}
+	m.mu.Unlock()
+	return d, nil
 }
 
+// mockChecksumPrefix marks a checksum URL that FetchChecksum resolves against
+// the registered sums.
+const mockChecksumPrefix = "mock-checksum://"
+
 func (m *Mock) FetchChecksum(ctx context.Context, u string) (*Checksum, error) {
+	if strings.HasPrefix(u, mockChecksumPrefix) {
+		m.mu.Lock()
+		sum, ok := m.Checksums[strings.TrimPrefix(u, mockChecksumPrefix)]
+		m.mu.Unlock()
+		if ok {
+			return &Checksum{MD5: sum}, nil
+		}
+	}
 	return nil, &HTTPError{Status: 404, URL: u}
 }
 
