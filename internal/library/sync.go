@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -14,6 +15,11 @@ import (
 
 // ErrSyncRunning is returned when a sync is requested while one is active.
 var ErrSyncRunning = errors.New("a library sync is already running")
+
+// ErrLibraryUnavailable is returned by CheckMissing when the library folder is
+// missing or empty although downloads are recorded, which is what an unmounted
+// volume looks like.
+var ErrLibraryUnavailable = errors.New("library folder is missing or empty although files were downloaded into it; leaving records alone (check the mount)")
 
 // Status describes the sync state for the UI.
 type Status struct {
@@ -42,7 +48,20 @@ type Syncer struct {
 	mu      sync.Mutex
 	status  Status
 	cancel  context.CancelFunc
-	details int // concurrent detail fetches
+	done    chan struct{} // closed when the running sync has stopped
+	details int           // concurrent detail fetches
+	// gameLocks serialises work on one game (int64 -> *sync.Mutex): a manual or
+	// selection-triggered sync of a game, the scheduled sync and a selection
+	// change would otherwise race on its file rows.
+	gameLocks sync.Map
+}
+
+// lockGame takes the per-game lock and returns the function that releases it.
+func (s *Syncer) lockGame(id int64) func() {
+	l, _ := s.gameLocks.LoadOrStore(id, &sync.Mutex{})
+	mu := l.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // NewSyncer creates a Syncer.
@@ -81,6 +100,7 @@ func (s *Syncer) start() (context.Context, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
+	s.done = make(chan struct{})
 	now := time.Now()
 	s.status.Running = true
 	s.status.Phase = "listing"
@@ -93,9 +113,20 @@ func (s *Syncer) start() (context.Context, error) {
 func (s *Syncer) finish(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now()
 	s.status.Running = false
 	s.status.Phase = ""
+	s.cancel = nil
+	if s.done != nil {
+		close(s.done)
+		s.done = nil
+	}
+	if errors.Is(err, context.Canceled) {
+		// Interrupted (shutdown, logout, settings change): not a finished run, so
+		// the scheduler retries without waiting a whole interval, and not an error
+		// worth showing.
+		return
+	}
+	now := time.Now()
 	s.status.LastFinishedAt = &now
 	_ = s.db.SetTime(context.Background(), "sync.last_finished_at", now)
 	if err != nil {
@@ -105,7 +136,6 @@ func (s *Syncer) finish(err error) {
 	} else {
 		_ = s.db.SetKV(context.Background(), "sync.last_error", "")
 	}
-	s.cancel = nil
 }
 
 // Cancel aborts a running sync.
@@ -115,6 +145,24 @@ func (s *Syncer) Cancel() {
 	s.mu.Unlock()
 	if c != nil {
 		c()
+	}
+}
+
+// CancelAndWait aborts a running sync and blocks until it has stopped, or until
+// ctx ends. It returns immediately when no sync is running.
+func (s *Syncer) CancelAndWait(ctx context.Context) error {
+	s.mu.Lock()
+	c, done := s.cancel, s.done
+	s.mu.Unlock()
+	if c == nil {
+		return nil
+	}
+	c()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -222,7 +270,9 @@ func (s *Syncer) syncAll(ctx context.Context) error {
 		return ctx.Err()
 	}
 	s.setPhase("reconciling", -1, -1)
-	if n, err := s.db.MarkMissingDone(ctx, s.paths.Exists); err == nil && n > 0 {
+	if n, err := s.CheckMissing(ctx); err != nil {
+		s.log.Error("disk check skipped", "error", err)
+	} else if n > 0 {
 		s.log.Warn("downloaded files missing from disk, queued again", "count", n)
 	}
 	s.log.Info("library sync finished", "games", len(games), "failed", failed)
@@ -249,6 +299,39 @@ func (s *Syncer) folderFor(ctx context.Context, g gog.ListedGame) (string, error
 	return folder, nil
 }
 
+// CheckMissing queues downloaded files that vanished from disk again. It refuses
+// (ErrLibraryUnavailable) when the library folder itself is gone or empty while
+// downloads are recorded: an unmounted volume must not turn into a re-download of
+// the whole library into the mount point.
+func (s *Syncer) CheckMissing(ctx context.Context) (int, error) {
+	st, err := os.Stat(s.paths.Root)
+	if err != nil || !st.IsDir() {
+		return 0, ErrLibraryUnavailable
+	}
+	entries, err := os.ReadDir(s.paths.Root)
+	if err != nil {
+		return 0, ErrLibraryUnavailable
+	}
+	if len(entries) == 0 {
+		counts, err := s.db.CountFilesByStatus(ctx)
+		if err != nil {
+			return 0, err
+		}
+		if counts[db.StatusDone] > 0 {
+			return 0, ErrLibraryUnavailable
+		}
+	}
+	return s.db.MarkMissingDone(ctx, s.paths.Exists)
+}
+
+// abortTransfer stops a running download of a file and removes its partial data.
+func (s *Syncer) abortTransfer(fileID int64, localPath string) {
+	if s.OnDrop != nil {
+		s.OnDrop(fileID)
+	}
+	s.paths.RemovePart(localPath)
+}
+
 // SyncGame refreshes one game's downloads from GOG.
 func (s *Syncer) SyncGame(ctx context.Context, id int64) error {
 	if !s.gog.Authenticated() {
@@ -270,6 +353,7 @@ func (s *Syncer) SyncGame(ctx context.Context, id int64) error {
 }
 
 func (s *Syncer) syncGame(ctx context.Context, id int64, owned gog.OwnedSet, settings db.Settings) error {
+	defer s.lockGame(id)()
 	game, err := s.db.GetGame(ctx, id)
 	if err != nil {
 		return err
@@ -279,7 +363,18 @@ func (s *Syncer) syncGame(ctx context.Context, id int64, owned gog.OwnedSet, set
 	}
 	if !settings.WantsGame(*game) {
 		// Not selected for download: leave GOG alone and plan nothing. Its files were
-		// already dropped when it was deselected (or when the download mode changed).
+		// dropped when it was deselected (or when the download mode changed); anything
+		// still tracked slipped in from a detail fetch that was already running.
+		dropped, err := s.db.DeactivateOtherFiles(ctx, id, nil)
+		if err != nil {
+			return err
+		}
+		for _, f := range dropped {
+			s.abortTransfer(f.ID, f.LocalPath)
+		}
+		if len(dropped) > 0 {
+			s.log.Info("dropped files of a game that is not selected", "game", game.Title, "files", len(dropped))
+		}
 		s.log.Debug("game not selected, skipped", "game", game.Title)
 		return nil
 	}
@@ -308,11 +403,21 @@ func (s *Syncer) syncGame(ctx context.Context, id int64, owned gog.OwnedSet, set
 				updated++
 				s.log.Info("new version available", "game", game.Title, "file", f.Name, "version", f.Version)
 			}
+			if res.Changed {
+				// A transfer of the old version may be running; it must not finish
+				// under the new one, and its partial file is of no use.
+				s.abortTransfer(res.ID, res.LocalPath)
+			}
 		}
 	}
 	dropped, err := s.db.DeactivateOtherFiles(ctx, id, keep)
 	if err != nil {
 		return err
+	}
+	for _, f := range dropped {
+		// Nothing tracks the file anymore, so a running transfer would only leave
+		// an orphan behind.
+		s.abortTransfer(f.ID, f.LocalPath)
 	}
 	if added > 0 || updated > 0 || len(dropped) > 0 {
 		s.log.Info("game synced", "game", game.Title, "new_files", added, "updated_files", updated, "dropped_files", len(dropped))

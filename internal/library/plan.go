@@ -53,16 +53,25 @@ func planFiles(gameID, productID int64, dl gog.Downloads, dlcFolder string, s db
 		byOS[os] = append(byOS[os], inst)
 	}
 	for _, os := range s.Platforms {
-		for _, inst := range chooseLanguages(byOS[os], s) {
+		chosen := chooseLanguages(byOS[os], s)
+		for _, inst := range chosen {
+			lang := strings.ToLower(inst.Language)
+			dir := RelDir("installer", os, dlcFolder)
+			if len(chosen) > 1 {
+				// Installers of different languages often share file names; give
+				// each language its own folder so they cannot overwrite each other.
+				// The parts of one installer stay together, which they must.
+				dir = filepath.ToSlash(filepath.Join(dir, SanitizeFolder(lang)))
+			}
 			for i, f := range inst.Files {
 				id := string(f.ID)
 				if id == "" {
 					id = fmt.Sprintf("%s_%d", inst.ID, i)
 				}
 				files = append(files, db.File{
-					GameID: gameID, ProductID: productID, Kind: "installer", OS: os, Language: strings.ToLower(inst.Language),
+					GameID: gameID, ProductID: productID, Kind: "installer", OS: os, Language: lang,
 					GogID: id, Name: inst.Name, Version: inst.Version, Size: int64(f.Size), Downlink: f.Downlink,
-					RelDir: RelDir("installer", os, dlcFolder),
+					RelDir: dir,
 				})
 			}
 		}

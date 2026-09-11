@@ -12,7 +12,9 @@ limit bandwidth and concurrency.
 - **Full or selected library** – download every game you own, or only the games you tick in
   the library (nothing is selected until you do). Installers (Windows / macOS / Linux, your
   choice), owned DLC and optionally extras (soundtracks, manuals, artbooks…) are organised as
-  `library/<Game>/<os>/…`, `library/<Game>/dlc/<DLC>/<os>/…` and `library/<Game>/extras/…`.
+  `library/<Game>/<os>/…`, `library/<Game>/dlc/<DLC>/<os>/…` and `library/<Game>/extras/…`
+  (when installers in several languages are wanted, each language gets its own
+  `library/<Game>/<os>/<lang>/…` folder, since their file names are often identical).
 - **Automatic updates** – a scheduler re-checks GOG every *N* hours; new versions replace the
   old installer once the new download has completed and verified.
 - **Robust downloads** – configurable number of parallel downloads, global speed limit,

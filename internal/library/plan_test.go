@@ -85,6 +85,22 @@ func TestPlanMultipleLanguagesAndExtras(t *testing.T) {
 		if f.Kind == "extra" && f.RelDir != "extras" {
 			t.Errorf("extra rel dir = %q", f.RelDir)
 		}
+		// English and German installers share file names in the sample library (as
+		// they can on GOG): with several languages each gets its own folder.
+		if f.Kind == "installer" && f.OS == "windows" && f.RelDir != "windows/"+f.Language {
+			t.Errorf("windows/%s installer rel dir = %q, want per-language folder", f.Language, f.RelDir)
+		}
+		if f.Kind == "installer" && f.OS == "mac" && f.RelDir != "mac" {
+			t.Errorf("single-language mac installer rel dir = %q, want mac", f.RelDir)
+		}
+	}
+	paths := map[string]string{}
+	for _, f := range files {
+		key := f.RelDir + "/" + f.GogID
+		if other, dup := paths[key]; dup {
+			t.Errorf("two files plan the same location %s: %s and %s", key, other, f.Language)
+		}
+		paths[key] = f.Language
 	}
 }
 
