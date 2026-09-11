@@ -28,6 +28,10 @@ type API interface {
 	ListGames(ctx context.Context, progress func(page, total int)) ([]ListedGame, error)
 	// ProductDetails returns downloads for a game and its DLC.
 	ProductDetails(ctx context.Context, id int64) (*Product, error)
+	// LatestBuild returns the newest public Galaxy build of a product for one OS,
+	// or nil when GOG publishes none (common for Linux builds and for games that
+	// predate Galaxy). It is a change hint only; see library.Syncer.
+	LatestBuild(ctx context.Context, productID int64, os string) (*Build, error)
 	// ResolveDownlink turns an API downlink into a CDN URL.
 	ResolveDownlink(ctx context.Context, downlink string) (*Downlink, error)
 	// FetchChecksum reads the checksum XML, if available.

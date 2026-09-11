@@ -16,7 +16,9 @@ limit bandwidth and concurrency.
   (when installers in several languages are wanted, each language gets its own
   `library/<Game>/<os>/<lang>/…` folder, since their file names are often identical).
 - **Automatic updates** – a scheduler re-checks GOG every *N* hours; new versions replace the
-  old installer once the new download has completed and verified.
+  old installer once the new download has completed and verified. A change is confirmed
+  against GOG's published checksum before a downloaded file is fetched again, and the
+  checksums are re-checked in the background so a silently replaced installer is still found.
 - **Robust downloads** – configurable number of parallel downloads, global speed limit,
   resumable `.part` files, MD5 verification against GOG's checksums, automatic retries with
   backoff, free-space check.
@@ -150,9 +152,21 @@ Traefik with forward auth) before exposing it beyond your LAN.
   each game's download manifest from `api.gog.com` (in "selected games only" mode, only for
   selected games; the rest are just listed). For every game it plans the wanted files
   from your settings (platforms, languages with optional fallback, DLC, extras) and reconciles
-  them with the database: new files become *pending*, files whose version or size changed
-  become *pending* again (the old file is deleted after the new one succeeds), files that are no
+  them with the database: new files become *pending*, files that really changed become
+  *pending* again (the old file is deleted after the new one succeeds), files that are no
   longer offered are marked *inactive*.
+- **Deciding that a file changed** (`internal/library/sync.go`): GOG publishes no build
+  identity for offline installers, so three signals are combined, cheapest first. The
+  installer's version string and manifest size come with the manifest and cost nothing, but
+  they move when nothing changed and stay put when something did. The newest *Galaxy build id*
+  of the game (one request per platform, at most every six hours) is a hint that a game was
+  rebuilt — Galaxy's chunked builds are not the offline installers and the two are published
+  separately, so it only marks a game as worth a closer look. **GOG's published MD5** for the
+  file settles it: it is fetched for the files the first two signals point at, and for a slow
+  rolling re-check of everything else (25 files per sync, each file at least monthly), so a
+  silent replacement is found even for the Linux builds and extras Galaxy never covers. A copy
+  whose checksum still matches is kept, however much its version string moved — which is what
+  keeps a bumped version from costing a 60 GB re-download.
 - **Downloader** (`internal/downloader`): a worker pool fills up to *N* parallel transfers from
   the pending queue, resolving GOG's time-limited CDN links at download time. A shared token
   bucket enforces the speed limit. Transfers write to `<file>.part`, resume with HTTP ranges,

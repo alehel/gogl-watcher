@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // User is the authenticated GOG account.
@@ -72,6 +73,16 @@ type DownloadFile struct {
 	ID       FlexString `json:"id"`
 	Size     FlexInt    `json:"size"`
 	Downlink string     `json:"downlink"`
+}
+
+// Build is one build of a product in GOG's Galaxy content system. It describes
+// the chunked depot install, not the offline installer this application
+// downloads, so it is only used as a hint that something was rebuilt.
+type Build struct {
+	ID          string
+	VersionName string
+	PublishedAt time.Time
+	Public      bool
 }
 
 // Downlink is the resolved, time-limited CDN location of a file.

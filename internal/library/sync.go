@@ -6,11 +6,47 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alehel/gogl-watcher/internal/db"
 	"github.com/alehel/gogl-watcher/internal/gog"
+)
+
+// How the sync decides that a file changed, cheapest signal first.
+//
+// GOG offers no build identity for the offline installers this application
+// archives: the manifest carries a free-text version and an approximate size,
+// both of which move when nothing changed and stay put when something did. So
+// three signals are combined:
+//
+//  1. The installer's version and manifest size (free, part of the details
+//     fetch that happens anyway). Catches ordinary updates.
+//  2. The newest Galaxy build id of the game, one cheap request per platform.
+//     The chunked Galaxy build is not the offline installer and the two are
+//     published on their own schedules, so a moved build id is only a hint that
+//     this game deserves a closer look.
+//  3. GOG's published MD5 for the file, which is authoritative but costs a
+//     request or two per file. It is spent on the files the first two signals
+//     point at, and on a slow rolling re-check of everything else, so that a
+//     silent replacement is noticed within verifyInterval even for the games
+//     Galaxy never covers.
+//
+// Signal 3 decides when it can answer, because it is the only one that can
+// prevent both a needless multi-gigabyte re-download and a missed update.
+const (
+	// verifyInterval is how long a checksum-verified copy is taken on trust.
+	verifyInterval = 30 * 24 * time.Hour
+	// verifyBudget caps the rolling re-checks of one full sync, so the cost of a
+	// sync stays roughly constant however large the library is. At the default
+	// six-hourly interval this covers about 3000 files a month.
+	verifyBudget = 25
+	// buildCheckInterval is the shortest time between two build list requests for
+	// the same game and platform. A short check interval would otherwise spend
+	// most of its requests on a signal that moves days before the installers do.
+	buildCheckInterval = 6 * time.Hour
 )
 
 // ErrSyncRunning is returned when a sync is requested while one is active.
@@ -57,6 +93,9 @@ type Syncer struct {
 	// planSem (capacity 1) serialises a settings change with the start of a sync,
 	// so a sync cannot read the settings while ApplySettings is still storing them.
 	planSem chan struct{}
+	// rollingLeft is how many files the running full sync may still re-check
+	// against GOG's checksums without a reason to suspect them.
+	rollingLeft atomic.Int64
 }
 
 // lockPlan takes planSem, giving up when ctx ends.
@@ -223,6 +262,7 @@ func (s *Syncer) syncAll(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.rollingLeft.Store(verifyBudget)
 	s.log.Info("library sync started")
 	owned, err := s.gog.OwnedIDs(ctx)
 	if err != nil {
@@ -269,7 +309,7 @@ func (s *Syncer) syncAll(ctx context.Context) error {
 		go func(id int64, title string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			err := s.syncGame(ctx, id, owned, settings)
+			err := s.syncGame(ctx, id, owned, settings, true)
 			mu.Lock()
 			done++
 			if err != nil {
@@ -345,6 +385,129 @@ func (s *Syncer) CheckMissing(ctx context.Context) (int, error) {
 	return s.db.MarkMissingDone(ctx, s.paths.Exists)
 }
 
+// checkBuilds asks the Galaxy content system for the newest build of the game on
+// each selected platform and returns the platforms whose build moved since the
+// last sync. A build id that was never recorded is stored without suspecting
+// anything: there is nothing to compare it against yet.
+//
+// Failures are not errors. Most games have no build for some platform, older
+// ones have none at all, and the endpoint is not part of the download path, so
+// nothing here may stop a sync.
+func (s *Syncer) checkBuilds(ctx context.Context, game db.Game, settings db.Settings) map[string]bool {
+	suspect := map[string]bool{}
+	for _, os := range settings.Platforms {
+		if !game.WorksOn(os) {
+			continue
+		}
+		prev, err := s.db.GetGameBuild(ctx, game.ID, os)
+		if err != nil {
+			s.log.Warn("could not read the recorded build", "game", game.Title, "os", os, "error", err)
+			return suspect
+		}
+		if prev != nil && time.Since(prev.CheckedAt) < buildCheckInterval {
+			continue
+		}
+		build, err := s.gog.LatestBuild(ctx, game.ID, os)
+		if err != nil {
+			if ctx.Err() == nil {
+				s.log.Debug("could not read the build list", "game", game.Title, "os", os, "error", err)
+			}
+			continue
+		}
+		if build == nil {
+			continue
+		}
+		if err := s.db.SetGameBuild(ctx, game.ID, os, build.ID, build.VersionName); err != nil {
+			s.log.Warn("could not record the build", "game", game.Title, "os", os, "error", err)
+			return suspect
+		}
+		if prev != nil && prev.BuildID != build.ID {
+			suspect[os] = true
+			s.log.Info("game was rebuilt on GOG, checking its installers",
+				"game", game.Title, "os", os, "build", build.ID, "version", build.VersionName)
+		}
+	}
+	return suspect
+}
+
+// remoteMD5 returns the MD5 GOG publishes for a file, or "" when it publishes
+// none (which is normal for extras).
+func (s *Syncer) remoteMD5(ctx context.Context, downlink string) (string, error) {
+	link, err := s.gog.ResolveDownlink(ctx, downlink)
+	if err != nil {
+		return "", err
+	}
+	if link.ChecksumURL == "" {
+		return "", nil
+	}
+	cs, err := s.gog.FetchChecksum(ctx, link.ChecksumURL)
+	if err != nil {
+		return "", err
+	}
+	return strings.ToLower(strings.TrimSpace(cs.MD5)), nil
+}
+
+// claimRolling reports whether f is due for a rolling re-check and this sync
+// still has room for one, taking it from the budget if so.
+func (s *Syncer) claimRolling(f db.File) bool {
+	if f.VerifiedAt != nil && time.Since(*f.VerifiedAt) < verifyInterval {
+		return false
+	}
+	if s.rollingLeft.Add(-1) < 0 {
+		s.rollingLeft.Add(1)
+		return false
+	}
+	return true
+}
+
+// verifier answers, for the files it is worth a request for, whether a
+// downloaded copy really differs from what GOG now offers. suspect holds the
+// platforms whose Galaxy build moved.
+func (s *Syncer) verifier(game db.Game, suspect map[string]bool, rolling bool) db.Verifier {
+	return func(ctx context.Context, stored db.File, next db.File, hint bool) (bool, error) {
+		switch {
+		case hint:
+			// The metadata says this changed. Confirm it before a copy that may be
+			// tens of gigabytes is thrown away over a bumped version string.
+		case suspect[stored.OS], stored.OS == "" && len(suspect) > 0:
+			// The game was rebuilt, so its installers may have been too without the
+			// metadata moving. Extras carry no platform and are checked with the rest.
+		case rolling && s.claimRolling(stored):
+			// Nothing points at this file; it is just the one whose turn it is.
+		default:
+			return hint, nil
+		}
+		md5, err := s.remoteMD5(ctx, next.Downlink)
+		if err != nil {
+			if ctx.Err() == nil {
+				s.log.Debug("could not read a checksum, using GOG's metadata instead",
+					"game", game.Title, "file", stored.Name, "error", err)
+			}
+			return hint, err
+		}
+		// Even a file GOG publishes no checksum for counts as checked, so the
+		// rolling re-check is not spent on it again on the next sync.
+		if err := s.db.SetFileVerified(ctx, stored.ID); err != nil {
+			s.log.Debug("could not record a checksum check", "file", stored.Name, "error", err)
+		}
+		if md5 == "" {
+			return hint, nil
+		}
+		if md5 == strings.ToLower(stored.MD5) {
+			if hint {
+				s.log.Info("GOG's metadata changed but the file is identical, keeping the local copy",
+					"game", game.Title, "file", stored.Name, "version", next.Version)
+			}
+			return false, nil
+		}
+		if !hint {
+			s.log.Info("file replaced on GOG without a version change",
+				"game", game.Title, "file", stored.Name, "version", next.Version)
+		}
+		return true, nil
+	}
+}
+
 // abortTransfer stops a running download of a file and removes its partial data.
 func (s *Syncer) abortTransfer(fileID int64, localPath string) {
 	if s.OnDrop != nil {
@@ -366,14 +529,18 @@ func (s *Syncer) SyncGame(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	err = s.syncGame(ctx, id, owned, settings)
+	// The rolling re-check works through the whole library and belongs to a full
+	// sync; one game's sync only follows up on what it is told about that game.
+	err = s.syncGame(ctx, id, owned, settings, false)
 	if s.OnChange != nil {
 		s.OnChange()
 	}
 	return err
 }
 
-func (s *Syncer) syncGame(ctx context.Context, id int64, owned gog.OwnedSet, settings db.Settings) error {
+// syncGame plans one game's files. rolling allows the slow re-check of files
+// nothing in particular suspects, which belongs to a full sync.
+func (s *Syncer) syncGame(ctx context.Context, id int64, owned gog.OwnedSet, settings db.Settings, rolling bool) error {
 	defer s.lockGame(id)()
 	game, err := s.db.GetGame(ctx, id)
 	if err != nil {
@@ -404,7 +571,9 @@ func (s *Syncer) syncGame(ctx context.Context, id int64, owned gog.OwnedSet, set
 		_ = s.db.SetGameDetailsSynced(ctx, id, err.Error())
 		return err
 	}
+	suspect := s.checkBuilds(ctx, *game, settings)
 	planned := Plan(*game, p, owned, settings)
+	verify := s.verifier(*game, suspect, rolling)
 	var keep []int64
 	added, updated := 0, 0
 	for _, pp := range planned {
@@ -412,7 +581,7 @@ func (s *Syncer) syncGame(ctx context.Context, id int64, owned gog.OwnedSet, set
 			return err
 		}
 		for _, f := range pp.Files {
-			res, err := s.db.UpsertDesiredFile(ctx, f, s.paths.Exists)
+			res, err := s.db.UpsertDesiredFileVerified(ctx, f, s.paths.Exists, verify)
 			if err != nil {
 				return err
 			}
