@@ -420,17 +420,12 @@ func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 		"dlc", ns.IncludeDLC, "extras", ns.IncludeExtras, "concurrent", ns.MaxConcurrentDownloads,
 		"speed_limit_kbps", ns.SpeedLimitKBps, "interval_hours", ns.CheckIntervalHours)
 	s.Downloads.Configure(ns, done)
-	if done && planningChanged(old, ns) {
+	if done && !old.SamePlan(ns) {
 		s.Scheduler.TriggerNow()
 	}
+	// A changed check interval applies from now on, not after the next run.
+	s.Scheduler.Reschedule()
 	writeJSON(w, 200, ns)
-}
-
-func planningChanged(a, b db.Settings) bool {
-	return a.DownloadMode != b.DownloadMode ||
-		strings.Join(a.Platforms, ",") != strings.Join(b.Platforms, ",") ||
-		strings.Join(a.Languages, ",") != strings.Join(b.Languages, ",") ||
-		a.LanguageFallback != b.LanguageFallback || a.IncludeDLC != b.IncludeDLC || a.IncludeExtras != b.IncludeExtras
 }
 
 // ---- library ----

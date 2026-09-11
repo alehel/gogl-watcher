@@ -19,6 +19,7 @@ type Scheduler struct {
 	syncer  *library.Syncer
 	log     *slog.Logger
 	trigger chan struct{}
+	nudge   chan struct{}
 	started time.Time
 	delay   time.Duration
 }
@@ -26,13 +27,23 @@ type Scheduler struct {
 // New creates a scheduler. startupDelay postpones the first run after boot.
 func New(d *db.DB, g gog.API, s *library.Syncer, log *slog.Logger, startupDelay time.Duration) *Scheduler {
 	return &Scheduler{db: d, gog: g, syncer: s, log: log.With("component", "scheduler"), trigger: make(chan struct{}, 1),
-		started: time.Now(), delay: startupDelay}
+		nudge: make(chan struct{}, 1), started: time.Now(), delay: startupDelay}
 }
 
 // TriggerNow requests a sync as soon as possible.
 func (s *Scheduler) TriggerNow() {
 	select {
 	case s.trigger <- struct{}{}:
+	default:
+	}
+}
+
+// Reschedule makes the scheduler recompute when the next sync is due, for
+// example after the check interval was changed in the settings. It does not
+// start a sync by itself.
+func (s *Scheduler) Reschedule() {
+	select {
+	case s.nudge <- struct{}{}:
 	default:
 	}
 }
@@ -87,6 +98,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-s.trigger:
 			timer.Stop()
 			fired = s.ready(ctx)
+		case <-s.nudge:
+			timer.Stop()
 		}
 		if !fired {
 			continue

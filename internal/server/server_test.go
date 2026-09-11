@@ -143,6 +143,7 @@ func TestSetupFlowAndSettings(t *testing.T) {
 	if len(games) < 10 {
 		t.Fatalf("expected the sample library, got %d games", len(games))
 	}
+	waitSyncIdle(t, srv) // details are fetched after the list; wait for them too
 	_, st = call(t, srv, "GET", "/api/status", nil)
 	if st["setup_complete"] != true || st["setup_step"] != "done" {
 		t.Errorf("final status: %v", st)
@@ -415,5 +416,54 @@ func TestExistingInstallKeepsDownloadingEverything(t *testing.T) {
 	got, _ := d.GetSettings(ctx)
 	if got.DownloadMode != db.DownloadAll {
 		t.Errorf("finished setups without a mode must default to all, got %q", got.DownloadMode)
+	}
+}
+
+// Saving a new check interval must be reflected in the scheduled next run at once.
+func TestIntervalChangeReschedulesNextRun(t *testing.T) {
+	srv, _ := newTestServer(t)
+	if code, _ := call(t, srv, "POST", "/api/auth/code", map[string]string{"code": "abc"}); code != 200 {
+		t.Fatal("auth failed")
+	}
+	_, settings := call(t, srv, "GET", "/api/settings", nil)
+	settings["download_mode"] = "selected"
+	settings["platforms"] = []string{"windows"}
+	settings["content_chosen"] = true
+	if code, out := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings}); code != 200 {
+		t.Fatalf("save settings: %d %v", code, out)
+	}
+	if code, out := call(t, srv, "POST", "/api/setup/complete", nil); code != 200 {
+		t.Fatalf("complete: %d %v", code, out)
+	}
+	waitSyncIdle(t, srv)
+	nextRunIn := func() time.Duration {
+		_, st := call(t, srv, "GET", "/api/status", nil)
+		next, _ := st["sync"].(map[string]any)["next_run_at"].(string)
+		if next == "" {
+			return 0
+		}
+		ts, err := time.Parse(time.RFC3339Nano, next)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return time.Until(ts)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && nextRunIn() < 5*time.Hour {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if d := nextRunIn(); d < 5*time.Hour {
+		t.Fatalf("expected the next run about 6 h away, got %v", d)
+	}
+	settings["check_interval_hours"] = 1
+	if code, out := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings}); code != 200 {
+		t.Fatalf("save interval: %d %v", code, out)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && nextRunIn() > 2*time.Hour {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if d := nextRunIn(); d <= 0 || d > 2*time.Hour {
+		t.Fatalf("next run should follow the new 1 h interval, got %v", d)
 	}
 }
