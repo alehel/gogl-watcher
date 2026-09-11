@@ -55,7 +55,7 @@ func planFiles(gameID, productID int64, dl gog.Downloads, dlcFolder string, s db
 	for _, os := range s.Platforms {
 		chosen := chooseLanguages(byOS[os], s)
 		for _, inst := range chosen {
-			lang := strings.ToLower(inst.Language)
+			lang := db.NormalizeLanguage(inst.Language)
 			dir := RelDir("installer", os, dlcFolder)
 			if len(chosen) > 1 {
 				// Installers of different languages often share file names; give
@@ -98,7 +98,7 @@ func planFiles(gameID, productID int64, dl gog.Downloads, dlcFolder string, s db
 func chooseLanguages(installers []gog.Installer, s db.Settings) []gog.Installer {
 	var chosen []gog.Installer
 	for _, inst := range installers {
-		if s.WantsLanguage(strings.ToLower(inst.Language)) {
+		if s.WantsLanguage(db.NormalizeLanguage(inst.Language)) {
 			chosen = append(chosen, inst)
 		}
 	}
@@ -106,7 +106,7 @@ func chooseLanguages(installers []gog.Installer, s db.Settings) []gog.Installer 
 		return chosen
 	}
 	for _, inst := range installers {
-		if strings.ToLower(inst.Language) == "en" {
+		if db.NormalizeLanguage(inst.Language) == "en" {
 			return []gog.Installer{inst}
 		}
 	}

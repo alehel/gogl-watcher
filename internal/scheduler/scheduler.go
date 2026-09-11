@@ -105,7 +105,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 			continue
 		}
 		s.syncer.SetNextRun(nil)
-		if err := s.syncer.SyncAll(ctx); err != nil && !errors.Is(err, library.ErrSyncRunning) && ctx.Err() == nil {
+		// An interrupted sync (logout, settings change) is not a failure.
+		if err := s.syncer.SyncAll(ctx); err != nil && !errors.Is(err, library.ErrSyncRunning) && !errors.Is(err, context.Canceled) && ctx.Err() == nil {
 			s.log.Error("scheduled sync failed", "error", err)
 		}
 	}

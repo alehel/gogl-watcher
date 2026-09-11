@@ -160,6 +160,86 @@ func TestApplySettingsDuringSyncDoesNotResurrectDroppedFiles(t *testing.T) {
 	}
 }
 
+// The scheduler restarts a cancelled sync right away; that sync must wait until
+// the settings change that cancelled it has stored the new settings.
+func TestSyncStartedDuringSettingsChangeWaitsForNewSettings(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	d, syncer, _ := newSyncTest(t, m)
+	ctx := context.Background()
+	old := saveSettings(t, d, "windows", "linux")
+
+	// Simulate ApplySettings holding the plan lock while it stores the settings.
+	if !syncer.lockPlan(ctx) {
+		t.Fatal("lock")
+	}
+	errc := make(chan error, 1)
+	go func() { errc <- syncer.SyncAll(ctx) }()
+	waitFor(t, 5*time.Second, func() bool { return syncer.Status().Running })
+	time.Sleep(200 * time.Millisecond)
+	if games, _ := d.ListGames(ctx); len(games) != 0 {
+		t.Fatalf("sync planned before the settings change finished: %d games", len(games))
+	}
+	ns := old
+	ns.Platforms = []string{"windows"}
+	_ = d.SaveSettings(ctx, ns)
+	syncer.unlockPlan()
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+	files, _ := d.ListActiveFiles(ctx)
+	for _, f := range files {
+		if f.OS == "linux" {
+			t.Fatalf("the restarted sync used the old settings: %+v", f)
+		}
+	}
+}
+
+// A settings change that needs an answer must be refused before it disturbs a
+// running sync.
+func TestRefusedSettingsChangeLeavesRunningSyncAlone(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	api := gatedAPI{Mock: m, gate: make(chan struct{})}
+	d, syncer, paths := newSyncTest(t, api)
+	ctx := context.Background()
+	old := saveSettings(t, d, "windows", "linux")
+	close(api.gate)
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// One linux file downloaded, so removing linux needs keep/delete.
+	files, _ := d.ListActiveFiles(ctx)
+	for _, f := range files {
+		if f.OS == "linux" {
+			rel := "Game/linux/x.sh"
+			_ = os.MkdirAll(filepath.Dir(paths.Abs(rel)), 0o755)
+			_ = os.WriteFile(paths.Abs(rel), []byte("x"), 0o644)
+			_ = d.SetFileDone(ctx, f.ID, rel, 1)
+			break
+		}
+	}
+	api.gate = make(chan struct{})
+	syncer.gog = api
+	errc := make(chan error, 1)
+	go func() { errc <- syncer.SyncAll(ctx) }()
+	waitFor(t, 5*time.Second, func() bool { return syncer.Status().Phase == "details" })
+	ns := old
+	ns.Platforms = []string{"windows"}
+	err := syncer.ApplySettings(ctx, ns, "")
+	var cr *ErrConfirmationRequired
+	if !errors.As(err, &cr) {
+		t.Fatalf("expected confirmation_required, got %v", err)
+	}
+	if !syncer.Status().Running {
+		t.Fatal("a refused settings change must not cancel the running sync")
+	}
+	close(api.gate)
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A file whose newer version is pending still has the previous version on disk.
 // Dropping it (deselecting the game, removing the platform) must treat that copy
 // like any downloaded file: ask, keep it on "keep", remove it on "delete", and

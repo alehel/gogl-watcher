@@ -181,20 +181,34 @@ func (s *Syncer) dropFiles(ctx context.Context, list []unwanted, onRemoved, why 
 // ApplySettings stores ns. onRemoved must be "keep" or "delete" when downloaded
 // files stop being wanted; files never downloaded are simply forgotten. A sync
 // that is running with the old settings is stopped first, since it would plan
-// (and re-add) files the new settings drop; the caller starts a fresh one.
+// (and re-add) files the new settings drop, and the next sync cannot start until
+// the new settings are stored; the caller triggers that fresh sync.
 func (s *Syncer) ApplySettings(ctx context.Context, ns db.Settings, onRemoved string) error {
+	// Ask before touching anything: a change that is refused for lack of an
+	// answer must not disturb a running sync.
+	list, err := s.findUnwanted(ctx, ns)
+	if err != nil {
+		return err
+	}
+	if p := previewOf(list); p.NeedsConfirmation && onRemoved != "keep" && onRemoved != "delete" {
+		return &ErrConfirmationRequired{Preview: p}
+	}
 	old, err := s.db.GetSettings(ctx)
 	if err != nil {
 		return err
 	}
 	if !old.SamePlan(ns) {
+		if !s.lockPlan(ctx) {
+			return ctx.Err()
+		}
+		defer s.unlockPlan()
 		if err := s.CancelAndWait(ctx); err != nil {
 			return err
 		}
-	}
-	list, err := s.findUnwanted(ctx, ns)
-	if err != nil {
-		return err
+		// The sync may have planned more files before it stopped.
+		if list, err = s.findUnwanted(ctx, ns); err != nil {
+			return err
+		}
 	}
 	if err := s.dropFiles(ctx, list, onRemoved, "settings change"); err != nil {
 		return err

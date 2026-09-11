@@ -54,7 +54,22 @@ type Syncer struct {
 	// selection-triggered sync of a game, the scheduled sync and a selection
 	// change would otherwise race on its file rows.
 	gameLocks sync.Map
+	// planSem (capacity 1) serialises a settings change with the start of a sync,
+	// so a sync cannot read the settings while ApplySettings is still storing them.
+	planSem chan struct{}
 }
+
+// lockPlan takes planSem, giving up when ctx ends.
+func (s *Syncer) lockPlan(ctx context.Context) bool {
+	select {
+	case s.planSem <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (s *Syncer) unlockPlan() { <-s.planSem }
 
 // lockGame takes the per-game lock and returns the function that releases it.
 func (s *Syncer) lockGame(id int64) func() {
@@ -66,7 +81,7 @@ func (s *Syncer) lockGame(id int64) func() {
 
 // NewSyncer creates a Syncer.
 func NewSyncer(d *db.DB, g gog.API, paths Paths, log *slog.Logger) *Syncer {
-	s := &Syncer{db: d, gog: g, log: log.With("component", "sync"), paths: paths, details: 3}
+	s := &Syncer{db: d, gog: g, log: log.With("component", "sync"), paths: paths, details: 3, planSem: make(chan struct{}, 1)}
 	ctx := context.Background()
 	s.status.LastFinishedAt, _ = d.GetTime(ctx, "sync.last_finished_at")
 	if e, _ := d.GetKV(ctx, "sync.last_error"); e != "" {
@@ -198,7 +213,13 @@ func (s *Syncer) syncAll(ctx context.Context) error {
 	if !s.gog.Authenticated() {
 		return errors.New("not authorized with GOG")
 	}
+	// Wait for a settings change in progress: it stops the previous sync and
+	// stores the new settings before letting the next one plan with them.
+	if !s.lockPlan(ctx) {
+		return ctx.Err()
+	}
 	settings, err := s.db.GetSettings(ctx)
+	s.unlockPlan()
 	if err != nil {
 		return err
 	}
