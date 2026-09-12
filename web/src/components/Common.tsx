@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { errorMessage, NetworkError } from "../api";
 import { formatAbsolute, formatRelative } from "../format";
 import { useNow } from "../hooks";
@@ -31,6 +31,13 @@ export function ApiErrorNotice({ error, stale }: { error: unknown; stale?: boole
       {stale && network ? " Showing the last known data." : ""}
     </div>
   );
+}
+
+/** Game cover that leaves its place empty when there is no image, or it fails to load. */
+export function CoverImage({ src, lazy }: { src: string | null | undefined; lazy?: boolean }) {
+  const [broken, setBroken] = useState(false);
+  if (!src || broken) return null;
+  return <img src={src} alt="" loading={lazy ? "lazy" : undefined} onError={() => setBroken(true)} />;
 }
 
 /** Relative time with the absolute time in a title attribute. */

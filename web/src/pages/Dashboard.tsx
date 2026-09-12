@@ -1,22 +1,15 @@
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import {
-  errorMessage,
-  getDownloads,
-  NetworkError,
-  pauseDownloads,
-  resumeDownloads,
-  startSync,
-  type ActiveDownload,
-  type Status,
-} from "../api";
+import { getDownloads, NetworkError, startSync, type ActiveDownload, type Status } from "../api";
 import { ApiErrorNotice, EmptyState, Loading, Spinner, TimeAgo } from "../components/Common";
 import { DataTable } from "../components/DataTable";
+import { PauseButton } from "../components/PauseButton";
 import { ProgressBar } from "../components/ProgressBar";
 import { StatusDot } from "../components/StatusDot";
 import { useStatus } from "../components/StatusContext";
-import { useToast } from "../components/Toast";
+import { useToastAction } from "../components/Toast";
 import { formatBytes, formatDuration, formatRelative, formatSpeed, plural, ratio } from "../format";
-import { useAction, useNow, usePolling } from "../hooks";
+import { useNow, usePolling } from "../hooks";
 
 export function DashboardPage() {
   const { status, error, loading, refresh } = useStatus();
@@ -44,6 +37,28 @@ export function DashboardPage() {
   if (d.queued > 0) parts.push(`${d.queued.toLocaleString()} queued`);
   if (status.sync.running) parts.push("sync running");
   else if (status.sync.next_run_at) parts.push(`next check ${formatRelative(status.sync.next_run_at, now)}`);
+
+  let activity: ReactNode;
+  if (downloads.data) {
+    activity = downloads.data.active.length ? (
+      <ActiveTable items={downloads.data.active} />
+    ) : (
+      <EmptyState>
+        {d.paused ? "Downloads are paused." : "Nothing downloading."}
+        {d.queued > 0 ? ` ${plural(d.queued, "file")} queued.` : ""}
+        {selectedOnly && wanted === 0 && d.queued === 0 ? (
+          <>
+            {" "}
+            No games are selected yet. <Link to="/library">Pick games in the library</Link> to start downloading.
+          </>
+        ) : null}
+      </EmptyState>
+    );
+  } else if (downloads.error) {
+    activity = <ApiErrorNotice error={downloads.error} />;
+  } else {
+    activity = <Loading />;
+  }
 
   return (
     <div className="stack">
@@ -75,7 +90,7 @@ export function DashboardPage() {
             <h2>Activity</h2>
             <div className="actions">
               <PauseButton
-                status={status}
+                paused={d.paused}
                 onChanged={() => {
                   refresh();
                   downloads.refresh();
@@ -83,27 +98,7 @@ export function DashboardPage() {
               />
             </div>
           </div>
-          {downloads.data ? (
-            downloads.data.active.length ? (
-              <ActiveTable items={downloads.data.active} />
-            ) : (
-              <EmptyState>
-                {d.paused ? "Downloads are paused." : "Nothing downloading."}
-                {d.queued > 0 ? ` ${plural(d.queued, "file")} queued.` : ""}
-                {selectedOnly && wanted === 0 && d.queued === 0 ? (
-                  <>
-                    {" "}
-                    No games are selected yet. <Link to="/library">Pick games in the library</Link> to start
-                    downloading.
-                  </>
-                ) : null}
-              </EmptyState>
-            )
-          ) : downloads.error ? (
-            <ApiErrorNotice error={downloads.error} />
-          ) : (
-            <Loading />
-          )}
+          {activity}
         </section>
         <SyncSection status={status} onChanged={refresh} />
       </div>
@@ -130,26 +125,19 @@ const PHASES: Record<string, string> = {
 
 function SyncSection({ status, onChanged }: { status: Status; onChanged: () => void }) {
   const s = status.sync;
-  const toast = useToast();
-  const sync = useAction(startSync);
+  const sync = useToastAction(startSync, {
+    success: "Library sync started",
+    failure: "Could not start sync",
+    onDone: onChanged,
+  });
   const canSync = status.authenticated && !s.running;
-
-  const run = async () => {
-    try {
-      await sync.run();
-      toast.success("Library sync started");
-      onChanged();
-    } catch (e) {
-      toast.error(`Could not start sync: ${errorMessage(e)}`);
-    }
-  };
 
   return (
     <section className="section">
       <div className="section-head">
         <h2>Sync</h2>
         <div className="actions">
-          <button className="btn" onClick={run} disabled={!canSync || sync.pending}>
+          <button className="btn" onClick={() => void sync.run()} disabled={!canSync || sync.pending}>
             {sync.pending && <Spinner />} Check GOG now
           </button>
         </div>
@@ -191,26 +179,6 @@ function SyncSection({ status, onChanged }: { status: Status; onChanged: () => v
         {status.disk.library_dir || "—"}
       </div>
     </section>
-  );
-}
-
-function PauseButton({ status, onChanged }: { status: Status; onChanged: () => void }) {
-  const toast = useToast();
-  const paused = status.downloads.paused;
-  const toggle = useAction(paused ? resumeDownloads : pauseDownloads);
-  const run = async () => {
-    try {
-      const res = (await toggle.run()) as { paused: boolean };
-      toast.success(res.paused ? "Downloads paused" : "Downloads resumed");
-      onChanged();
-    } catch (e) {
-      toast.error(errorMessage(e));
-    }
-  };
-  return (
-    <button className="btn" onClick={run} disabled={toggle.pending}>
-      {paused ? "Resume" : "Pause"}
-    </button>
   );
 }
 

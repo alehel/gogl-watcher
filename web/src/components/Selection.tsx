@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
-import { ApiError, errorMessage, getLanguages, setGameSelection, type OnRemoved, type SettingsPreview } from "../api";
+import { errorMessage, getLanguages, previewFromError, setGameSelection, type OnRemoved, type SettingsPreview } from "../api";
+import { plural } from "../format";
 import { useAsync } from "../hooks";
 import { RemovalConfirmModal } from "./SettingsFields";
 import { useToast } from "./Toast";
@@ -27,28 +28,13 @@ export function useGameSelection(onChanged: () => void) {
       try {
         await setGameSelection(ids, selected, onRemoved);
         setPending(null);
-        const n = ids.length;
-        toast.success(
-          selected
-            ? n === 1
-              ? "Game selected — fetching its files"
-              : `${n} games selected — fetching their files`
-            : n === 1
-              ? "Game removed from the selection"
-              : `${n} games removed from the selection`,
-        );
+        const what = plural(ids.length, "game");
+        toast.success(selected ? `${what} selected — fetching files` : `${what} removed from the selection`);
         onChanged();
       } catch (e) {
-        if (e instanceof ApiError && e.confirmationRequired) {
-          const body = e.body as Partial<SettingsPreview>;
-          setPending({
-            ids,
-            preview: {
-              needs_confirmation: true,
-              removed: body.removed ?? { files: 0, bytes: 0, downloaded_files: 0, downloaded_bytes: 0 },
-              reasons: body.reasons ?? [],
-            },
-          });
+        const preview = previewFromError(e);
+        if (preview) {
+          setPending({ ids, preview });
         } else {
           setPending(null);
           toast.error(`Could not change the selection: ${errorMessage(e)}`);

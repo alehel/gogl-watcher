@@ -357,6 +357,20 @@ export interface LogsQuery {
 export const getLogs = (query: LogsQuery = {}) =>
   request<LogsResponse>("GET", `/api/logs${qs({ limit: 100, ...query })}`);
 
+/**
+ * The removal preview a 409 `confirmation_required` carries, or null for any
+ * other failure. Missing parts are filled in so the dialog can always be shown.
+ */
+export function previewFromError(e: unknown): SettingsPreview | null {
+  if (!(e instanceof ApiError) || !e.confirmationRequired) return null;
+  const body = e.body as Partial<SettingsPreview>;
+  return {
+    needs_confirmation: true,
+    removed: body.removed ?? { files: 0, bytes: 0, downloaded_files: 0, downloaded_bytes: 0 },
+    reasons: body.reasons ?? [],
+  };
+}
+
 /** Extracts a human readable message from any thrown value. */
 export function errorMessage(e: unknown): string {
   if (e instanceof NetworkError) return "API unreachable";

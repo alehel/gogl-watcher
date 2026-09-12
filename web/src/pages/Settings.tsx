@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
-  ApiError,
   errorMessage,
   getLanguages,
   getSettings,
   logout,
+  previewFromError,
   previewSettings,
   putSettings,
   type OnRemoved,
@@ -17,20 +17,18 @@ import {
   DownloadModePicker,
   LanguageFallbackSwitch,
   LanguagePicker,
+  NumberField,
   PlatformPicker,
   RemovalConfirmModal,
 } from "../components/SettingsFields";
 import { useStatus } from "../components/StatusContext";
-import { useToast } from "../components/Toast";
+import { useToast, useToastAction } from "../components/Toast";
 import { kbpsToMbps, mbpsToKbps } from "../format";
 import { useAsync } from "../hooks";
 
-function clampInt(v: string, min: number, max: number, fallback: number): number {
-  if (v.trim() === "") return fallback;
-  const n = Math.round(Number(v));
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(min, Math.min(max, n));
-}
+// The bounds the backend enforces; the form refuses to send anything outside them.
+const CONCURRENCY = { min: 1, max: 8 };
+const INTERVAL_HOURS = { min: 1, max: 168 };
 
 /** Only the fields the user changed, on top of the settings as stored right now. */
 function mergeEdits(fresh: Settings, form: Settings, initial: Settings): Settings {
@@ -93,10 +91,6 @@ function SettingsForm({
 }) {
   const toast = useToast();
   const [form, setForm] = useState<Settings>(initial);
-  const [mbps, setMbps] = useState(String(kbpsToMbps(initial.speed_limit_kbps)));
-  // Integer fields keep their raw text while being edited so they can be cleared and retyped.
-  const [concText, setConcText] = useState(String(initial.max_concurrent_downloads));
-  const [intervalText, setIntervalText] = useState(String(initial.check_interval_hours));
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<SettingsPreview | null>(null);
   // What will be sent: the user's edits applied to the settings as stored when saving started.
@@ -105,24 +99,15 @@ function SettingsForm({
 
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) => setForm((f) => ({ ...f, [key]: value }));
 
-  // The stored value is only rewritten when the user edits the field: the MB/s
-  // display is rounded, so echoing it back on mount would make an untouched form
-  // dirty (and change the stored limit) whenever the value was not set via this UI.
-  const setSpeed = (value: string) => {
-    setMbps(value);
-    const n = Number(value);
-    if (value.trim() !== "" && Number.isFinite(n) && n >= 0) set("speed_limit_kbps", mbpsToKbps(n));
-  };
-
   const dirty = JSON.stringify(form) !== JSON.stringify(initial);
   const valid =
     form.download_mode !== "" &&
     form.platforms.length > 0 &&
     form.languages.length > 0 &&
-    form.max_concurrent_downloads >= 1 &&
-    form.max_concurrent_downloads <= 8 &&
-    form.check_interval_hours >= 1 &&
-    form.check_interval_hours <= 168 &&
+    form.max_concurrent_downloads >= CONCURRENCY.min &&
+    form.max_concurrent_downloads <= CONCURRENCY.max &&
+    form.check_interval_hours >= INTERVAL_HOURS.min &&
+    form.check_interval_hours <= INTERVAL_HOURS.max &&
     form.speed_limit_kbps >= 0;
 
   const apply = async (onRemoved: OnRemoved) => {
@@ -135,13 +120,9 @@ function SettingsForm({
       toast.success("Settings saved");
       onSaved();
     } catch (e) {
-      if (e instanceof ApiError && e.confirmationRequired) {
-        const body = e.body as Partial<SettingsPreview>;
-        setConfirm({
-          needs_confirmation: true,
-          removed: body.removed ?? { files: 0, bytes: 0, downloaded_files: 0, downloaded_bytes: 0 },
-          reasons: body.reasons ?? [],
-        });
+      const preview = previewFromError(e);
+      if (preview) {
+        setConfirm(preview);
       } else {
         setConfirm(null);
         setError(errorMessage(e));
@@ -176,12 +157,7 @@ function SettingsForm({
     await apply(null);
   };
 
-  const reset = () => {
-    setForm(initial);
-    setMbps(String(kbpsToMbps(initial.speed_limit_kbps)));
-    setConcText(String(initial.max_concurrent_downloads));
-    setIntervalText(String(initial.check_interval_hours));
-  };
+  const reset = () => setForm(initial);
 
   return (
     <>
@@ -239,67 +215,41 @@ function SettingsForm({
         <section className="form-section">
           <h2>Downloads</h2>
           <div className="form-row">
-            <div className="field">
-              <label htmlFor="s-conc">Concurrent downloads</label>
-              <div className="input-unit">
-                <input
-                  id="s-conc"
-                  className="input num"
-                  type="number"
-                  min={1}
-                  max={8}
-                  step={1}
-                  value={concText}
-                  onChange={(e) => {
-                    setConcText(e.target.value);
-                    if (e.target.value.trim() !== "") set("max_concurrent_downloads", clampInt(e.target.value, 1, 8, 1));
-                  }}
-                  onBlur={() => setConcText(String(form.max_concurrent_downloads))}
-                  disabled={busy}
-                />
-                <span className="unit">1–8</span>
-              </div>
-            </div>
-            <div className="field">
-              <label htmlFor="s-speed">Speed limit</label>
-              <div className="input-unit">
-                <input
-                  id="s-speed"
-                  className="input num"
-                  type="number"
-                  min={0}
-                  step={0.1}
-                  value={mbps}
-                  onChange={(e) => setSpeed(e.target.value)}
-                  onBlur={() => setMbps(String(kbpsToMbps(form.speed_limit_kbps)))}
-                  disabled={busy}
-                />
-                <span className="unit">MB/s</span>
-              </div>
-              <span className="hint">0 = unlimited, for all downloads together.</span>
-            </div>
-            <div className="field">
-              <label htmlFor="s-interval">Check GOG every</label>
-              <div className="input-unit">
-                <input
-                  id="s-interval"
-                  className="input num"
-                  type="number"
-                  min={1}
-                  max={168}
-                  step={1}
-                  value={intervalText}
-                  onChange={(e) => {
-                    setIntervalText(e.target.value);
-                    if (e.target.value.trim() !== "") set("check_interval_hours", clampInt(e.target.value, 1, 168, 6));
-                  }}
-                  onBlur={() => setIntervalText(String(form.check_interval_hours))}
-                  disabled={busy}
-                />
-                <span className="unit">hours</span>
-              </div>
-              <span className="hint">1–168 hours between library syncs.</span>
-            </div>
+            <NumberField
+              id="s-conc"
+              label="Concurrent downloads"
+              unit={`${CONCURRENCY.min}–${CONCURRENCY.max}`}
+              value={form.max_concurrent_downloads}
+              onChange={(v) => set("max_concurrent_downloads", v)}
+              min={CONCURRENCY.min}
+              max={CONCURRENCY.max}
+              disabled={busy}
+            />
+            <NumberField
+              id="s-speed"
+              label="Speed limit"
+              unit="MB/s"
+              hint="0 = unlimited, for all downloads together."
+              // The stored value is only rewritten when the user edits the field: the
+              // MB/s display is rounded, so echoing it back would change a limit that
+              // was not set through this UI.
+              value={kbpsToMbps(form.speed_limit_kbps)}
+              onChange={(v) => set("speed_limit_kbps", mbpsToKbps(v))}
+              min={0}
+              step={0.1}
+              disabled={busy}
+            />
+            <NumberField
+              id="s-interval"
+              label="Check GOG every"
+              unit="hours"
+              hint={`${INTERVAL_HOURS.min}–${INTERVAL_HOURS.max} hours between library syncs.`}
+              value={form.check_interval_hours}
+              onChange={(v) => set("check_interval_hours", v)}
+              min={INTERVAL_HOURS.min}
+              max={INTERVAL_HOURS.max}
+              disabled={busy}
+            />
           </div>
           <Checkbox
             checked={form.downloads_paused}
@@ -340,23 +290,18 @@ function SettingsForm({
 
 function AccountSection() {
   const { status, refresh } = useStatus();
-  const toast = useToast();
   const navigate = useNavigate();
-  const [busy, setBusy] = useState(false);
-
-  const disconnect = async () => {
-    if (!window.confirm("Disconnect the GOG account? Syncing stops until you authorize again.")) return;
-    setBusy(true);
-    try {
-      await logout();
-      toast.success("Disconnected from GOG");
+  const logoutAction = useToastAction(logout, {
+    success: "Disconnected from GOG",
+    onDone: () => {
       refresh();
       navigate("/auth");
-    } catch (e) {
-      toast.error(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
+    },
+  });
+
+  const disconnect = () => {
+    if (!window.confirm("Disconnect the GOG account? Syncing stops until you authorize again.")) return;
+    void logoutAction.run();
   };
 
   const user = status?.user ?? null;
@@ -375,8 +320,8 @@ function AccountSection() {
           {status?.authenticated ? "Reconnect" : "Connect"}
         </Link>
         {status?.authenticated && (
-          <button className="btn danger" onClick={disconnect} disabled={busy}>
-            {busy && <Spinner />} Disconnect
+          <button className="btn danger" onClick={disconnect} disabled={logoutAction.pending}>
+            {logoutAction.pending && <Spinner />} Disconnect
           </button>
         )}
       </div>
