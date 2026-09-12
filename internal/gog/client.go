@@ -32,6 +32,9 @@ const (
 	// contentBase serves the Galaxy content system: build lists and depot
 	// manifests. It needs no authorization.
 	contentBase = "https://content-system.gog.com"
+
+	// maxAttempts is how often a failed API request is repeated before giving up.
+	maxAttempts = 4
 )
 
 // Token is a stored OAuth token set.
@@ -363,7 +366,7 @@ func (c *Client) getJSON(ctx context.Context, u string, auth bool, out any) erro
 
 func (c *Client) get(ctx context.Context, u string, auth bool) ([]byte, error) {
 	var lastErr error
-	for attempt := 0; attempt < 4; attempt++ {
+	for attempt := range maxAttempts {
 		if attempt > 0 {
 			wait := time.Duration(1<<uint(attempt)) * time.Second
 			var he *HTTPError
@@ -598,14 +601,16 @@ func (c *Client) ResolveDownlink(ctx context.Context, downlink string) (*Downlin
 	return &d, nil
 }
 
-// FetchChecksum implements API.
+// FetchChecksum implements API. The checksum document is small, so it uses the
+// ordinary API client and its timeout, not the download client that is allowed
+// to take hours.
 func (c *Client) FetchChecksum(ctx context.Context, u string) (*Checksum, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", c.userAgent)
-	resp, err := c.dl.Do(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
 	}

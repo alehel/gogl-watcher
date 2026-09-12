@@ -55,10 +55,10 @@ func (s *Scheduler) ready(ctx context.Context) bool {
 
 func (s *Scheduler) nextRun(ctx context.Context) time.Time {
 	settings, err := s.db.GetSettings(ctx)
-	interval := 6 * time.Hour
-	if err == nil {
-		interval = time.Duration(settings.CheckIntervalHours) * time.Hour
+	if err != nil {
+		settings = db.DefaultSettings()
 	}
+	interval := time.Duration(settings.CheckIntervalHours) * time.Hour
 	st := s.syncer.Status()
 	var next time.Time
 	if st.LastFinishedAt == nil {

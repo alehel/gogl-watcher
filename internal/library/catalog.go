@@ -38,7 +38,7 @@ func catalogOfProduct(gameID, productID int64, isDLC bool, dl gog.Downloads) []d
 	var out []db.CatalogItem
 	for i, inst := range dl.Installers {
 		it := db.CatalogItem{GameID: gameID, ProductID: productID, IsDLC: isDLC, Kind: "installer",
-			ItemID: itemID(inst.ID, i), OS: normalizeOS(inst.OS), Language: db.NormalizeLanguage(inst.Language), Seq: i}
+			ItemID: itemID(inst.ID, i), OS: db.NormalizePlatform(inst.OS), Language: db.NormalizeLanguage(inst.Language), Seq: i}
 		for _, f := range inst.Files {
 			it.Files++
 			it.Bytes += int64(f.Size)

@@ -4,13 +4,7 @@ import { useAsync, useDebounced } from "../hooks";
 
 /** The settings that decide which files are wanted; nothing else moves a total. */
 function planKey(s: Settings): string {
-  return JSON.stringify([
-    s.platforms,
-    s.languages,
-    s.language_fallback,
-    s.include_dlc,
-    s.include_extras,
-  ]);
+  return JSON.stringify([s.platforms, s.languages, s.language_fallback, s.include_dlc, s.include_extras]);
 }
 
 /**
@@ -62,13 +56,12 @@ export function EstimateNote({
   }
   return (
     <p className={className}>
-      {lead} <strong>{formatBytes(bytes)}</strong> in {files.toLocaleString()}{" "}
-      {files === 1 ? "file" : "files"}
+      {lead} <strong>{formatBytes(bytes)}</strong> in {files.toLocaleString()} {files === 1 ? "file" : "files"}
       {left > 0 ? (
         <>
           {" "}
-          — measured from {games_scanned.toLocaleString()} of {games_total.toLocaleString()} games so far, so
-          the rest is still to come.
+          — measured from {games_scanned.toLocaleString()} of {games_total.toLocaleString()} games so far, so the rest
+          is still to come.
         </>
       ) : (
         "."

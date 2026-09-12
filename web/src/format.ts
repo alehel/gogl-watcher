@@ -103,7 +103,7 @@ export function formatLogTime(iso: string): string {
 }
 
 export function plural(n: number, singular: string, pluralForm?: string): string {
-  return `${n} ${n === 1 ? singular : pluralForm ?? `${singular}s`}`;
+  return `${n} ${n === 1 ? singular : (pluralForm ?? `${singular}s`)}`;
 }
 
 export const PLATFORM_LABELS: Record<string, string> = {

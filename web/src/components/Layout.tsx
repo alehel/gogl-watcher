@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { NetworkError } from "../api";
 import { useStatus } from "./StatusContext";
@@ -58,9 +58,12 @@ export function Layout() {
   const [open, setOpen] = useState(false);
   const location = useLocation();
 
-  useEffect(() => {
+  // Navigating closes the drawer, however the navigation happened.
+  const [lastPath, setLastPath] = useState(location.pathname);
+  if (location.pathname !== lastPath) {
+    setLastPath(location.pathname);
     setOpen(false);
-  }, [location.pathname]);
+  }
 
   const activeDownloads = status?.downloads.active ?? 0;
   const needsAuth = !!status && status.setup_complete && (!status.authenticated || !!status.auth_error);

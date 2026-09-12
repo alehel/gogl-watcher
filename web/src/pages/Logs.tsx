@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { errorMessage, getLogs, type LogEntry, type LogLevel } from "../api";
 import { ApiErrorNotice, EmptyState, Loading, Spinner } from "../components/Common";
 import { useToast } from "../components/Toast";
@@ -19,49 +19,51 @@ function merge(newest: LogEntry[], prev: LogEntry[]): LogEntry[] {
   return [...newest, ...prev.filter((r) => r.id < minId)];
 }
 
+/** The pages "Load older" has fetched, below the newest one. */
+interface Older {
+  rows: LogEntry[];
+  hasMore: boolean;
+}
+
 export function LogsPage() {
   const toast = useToast();
   const [level, setLevel] = useState<LogLevel>("info");
   const [q, setQ] = useState("");
   const dq = useDebounced(q.trim(), 300);
   const [auto, setAuto] = useState(true);
-  const [rows, setRows] = useState<LogEntry[]>([]);
-  const [hasMore, setHasMore] = useState(false);
+  const [older, setOlder] = useState<Older>({ rows: [], hasMore: false });
   const [loadingOlder, setLoadingOlder] = useState(false);
 
   const newest = usePolling(() => getLogs({ level, q: dq }), auto ? 3000 : 0, [level, dq]);
 
-  // Filter changed: drop everything until the new first page arrives.
-  useEffect(() => {
-    setRows([]);
-    setHasMore(false);
-  }, [level, dq]);
+  // A different filter makes everything below the newest page meaningless.
+  const filter = `${level}\u0000${dq}`;
+  const [lastFilter, setLastFilter] = useState(filter);
+  if (filter !== lastFilter) {
+    setLastFilter(filter);
+    setOlder({ rows: [], hasMore: false });
+  }
 
-  useEffect(() => {
-    if (!newest.data) return;
-    const page = newest.data;
-    setRows((prev) => {
-      const merged = merge(page.logs, prev);
-      // Only trust the first page's has_more when we hold nothing older than it.
-      if (merged.length === page.logs.length) setHasMore(page.has_more);
-      return merged;
-    });
-  }, [newest.data]);
+  // Only the newest page is polled; it is put in front of the older ones on every
+  // render, so new lines show up without the loaded pages being touched.
+  const rows = newest.data ? merge(newest.data.logs, older.rows) : [];
+  // Until something older is loaded, the newest page is what knows about more.
+  const hasMore = older.rows.length > 0 ? older.hasMore : (newest.data?.has_more ?? false);
 
-  const loadOlder = useCallback(async () => {
+  // Nothing depends on this function's identity, so it is rebuilt with the rows.
+  const loadOlder = async () => {
     if (rows.length === 0) return;
     const before = rows[rows.length - 1].id;
     setLoadingOlder(true);
     try {
       const res = await getLogs({ level, q: dq, before_id: before });
-      setRows((prev) => [...prev, ...res.logs.filter((r) => r.id < before)]);
-      setHasMore(res.has_more);
+      setOlder((prev) => ({ rows: [...prev.rows, ...res.logs.filter((r) => r.id < before)], hasMore: res.has_more }));
     } catch (e) {
       toast.error(`Could not load older logs: ${errorMessage(e)}`);
     } finally {
       setLoadingOlder(false);
     }
-  }, [rows, level, dq, toast]);
+  };
 
   return (
     <div className="stack">
@@ -124,7 +126,7 @@ export function LogsPage() {
           </div>
           <div className="log-foot">
             {hasMore ? (
-              <button className="btn" onClick={loadOlder} disabled={loadingOlder}>
+              <button className="btn" onClick={() => void loadOlder()} disabled={loadingOlder}>
                 {loadingOlder && <Spinner />} Load older
               </button>
             ) : (

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   completeSetup,
@@ -63,7 +63,7 @@ export function SetupPage() {
     if (i <= furthest) setActive(i);
   };
 
-  const withSettings = (render: (s: Settings) => JSX.Element) =>
+  const withSettings = (render: (s: Settings) => ReactNode) =>
     settingsState.data ? (
       render(settingsState.data)
     ) : settingsState.error ? (
@@ -161,6 +161,73 @@ export function SetupPage() {
   );
 }
 
+/**
+ * The parts every step after the first has in common: a title, the failure of
+ * its save, and the Back/Continue row.
+ */
+function StepFrame({
+  title,
+  lead,
+  children,
+  save,
+  onBack,
+  nextLabel = "Continue",
+  nextDisabled,
+}: {
+  title: string;
+  lead?: ReactNode;
+  children: ReactNode;
+  save: StepSave;
+  onBack: () => void;
+  nextLabel?: string;
+  nextDisabled?: boolean;
+}) {
+  return (
+    <div className="wizard-step">
+      <h1 className="page-title">{title}</h1>
+      {lead && <p className="lead">{lead}</p>}
+      {children}
+      {save.error && <div className="strip danger">{save.error}</div>}
+      <div className="wizard-actions">
+        <button className="btn text" onClick={onBack} disabled={save.busy}>
+          Back
+        </button>
+        <button className="btn primary" onClick={() => void save.run()} disabled={save.busy || nextDisabled}>
+          {save.busy && <Spinner />} {nextLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+interface StepSave {
+  run: () => Promise<void>;
+  busy: boolean;
+  error: string | null;
+}
+
+/**
+ * Stores a step's answer and moves on, keeping the message where the step can
+ * show it: a wizard that cannot save says so in place instead of toasting.
+ */
+function useStepSave(store: () => Promise<unknown>, onSaved: () => void): StepSave {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await store();
+      onSaved();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { run, busy, error };
+}
+
 function LoadError({ error, retry }: { error: unknown; retry: () => void }) {
   return (
     <div className="stack">
@@ -184,103 +251,42 @@ function AuthStep({ user, onConnected }: { user: User | null; onConnected: (u: U
   );
 }
 
-function GamesStep({
-  settings,
-  onSaved,
-  onBack,
-}: {
-  settings: Settings;
-  onSaved: () => void;
-  onBack: () => void;
-}) {
+function GamesStep({ settings, onSaved, onBack }: { settings: Settings; onSaved: () => void; onBack: () => void }) {
   const [mode, setMode] = useState<DownloadMode>(settings.download_mode);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const save = async () => {
-    if (mode === "") return;
-    setBusy(true);
-    setError(null);
-    try {
-      await putSettings({ ...settings, download_mode: mode }, null);
-      onSaved();
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const save = useStepSave(() => putSettings({ ...settings, download_mode: mode }, null), onSaved);
 
   return (
-    <div className="wizard-step">
-      <h1 className="page-title">Which games should be downloaded?</h1>
-      <p className="lead">
-        gogl-watcher can keep an offline copy of your whole GOG library, or only of the games you pick. You can switch
-        later under Settings.
-      </p>
-      <DownloadModePicker value={mode} onChange={setMode} disabled={busy} />
+    <StepFrame
+      title="Which games should be downloaded?"
+      lead="gogl-watcher can keep an offline copy of your whole GOG library, or only of the games you pick. You can switch later under Settings."
+      save={save}
+      onBack={onBack}
+      nextDisabled={mode === ""}
+    >
+      <DownloadModePicker value={mode} onChange={setMode} disabled={save.busy} />
       {mode === "selected" && (
         <p className="muted small">
           After setup, open the library and tick the games you want. No game is selected to begin with.
         </p>
       )}
-      {error && <div className="strip danger">{error}</div>}
-      <div className="wizard-actions">
-        <button className="btn text" onClick={onBack} disabled={busy}>
-          Back
-        </button>
-        <button className="btn primary" onClick={save} disabled={busy || mode === ""}>
-          {busy && <Spinner />} Continue
-        </button>
-      </div>
-    </div>
+    </StepFrame>
   );
 }
 
-function PlatformsStep({
-  settings,
-  onSaved,
-  onBack,
-}: {
-  settings: Settings;
-  onSaved: () => void;
-  onBack: () => void;
-}) {
+function PlatformsStep({ settings, onSaved, onBack }: { settings: Settings; onSaved: () => void; onBack: () => void }) {
   const [platforms, setPlatforms] = useState<Platform[]>(settings.platforms);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const save = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await putSettings({ ...settings, platforms }, null);
-      onSaved();
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const save = useStepSave(() => putSettings({ ...settings, platforms }, null), onSaved);
 
   return (
-    <div className="wizard-step">
-      <h1 className="page-title">Which platforms do you want installers for?</h1>
-      <p className="lead">
-        For every game that is downloaded, the offline installers for these platforms will be fetched when GOG offers
-        them. Pick at least one.
-      </p>
-      <PlatformPicker value={platforms} onChange={setPlatforms} disabled={busy} />
-      {error && <div className="strip danger">{error}</div>}
-      <div className="wizard-actions">
-        <button className="btn text" onClick={onBack} disabled={busy}>
-          Back
-        </button>
-        <button className="btn primary" onClick={save} disabled={busy || platforms.length === 0}>
-          {busy && <Spinner />} Continue
-        </button>
-      </div>
-    </div>
+    <StepFrame
+      title="Which platforms do you want installers for?"
+      lead="For every game that is downloaded, the offline installers for these platforms will be fetched when GOG offers them. Pick at least one."
+      save={save}
+      onBack={onBack}
+      nextDisabled={platforms.length === 0}
+    >
+      <PlatformPicker value={platforms} onChange={setPlatforms} disabled={save.busy} />
+    </StepFrame>
   );
 }
 
@@ -301,11 +307,9 @@ function YesNo({
 }) {
   return (
     <div className="field">
-      <span className="field-label" style={{ color: "var(--text)" }}>
-        {label}
-      </span>
+      <span className="field-label">{label}</span>
       <span className="hint">{hint}</span>
-      <div className="check-inline" role="radiogroup" aria-label={label} style={{ marginTop: 4 }}>
+      <div className="check-inline field-body" role="radiogroup" aria-label={label}>
         {[true, false].map((v) => (
           <label key={String(v)} className="check">
             <input type="radio" name={name} checked={value === v} disabled={disabled} onChange={() => onChange(v)} />
@@ -335,45 +339,38 @@ function ContentStep({
   const [extras, setExtras] = useState<boolean | null>(chosen ? settings.include_extras : null);
   const [langs, setLangs] = useState<string[]>(settings.languages.length ? settings.languages : ["en"]);
   const [fallback, setFallback] = useState(settings.language_fallback);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const valid = dlc !== null && extras !== null && langs.length > 0;
-
-  const save = async () => {
-    if (!valid) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await putSettings(
+  const save = useStepSave(
+    () =>
+      putSettings(
         {
           ...settings,
-          include_dlc: dlc,
-          include_extras: extras,
+          include_dlc: dlc ?? false,
+          include_extras: extras ?? false,
           languages: langs,
           language_fallback: fallback,
           content_chosen: true,
         },
         null,
-      );
-      onSaved();
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+      ),
+    onSaved,
+  );
 
   return (
-    <div className="wizard-step">
-      <h1 className="page-title">What should be downloaded besides the base game?</h1>
+    <StepFrame
+      title="What should be downloaded besides the base game?"
+      save={save}
+      onBack={onBack}
+      nextDisabled={!valid}
+    >
       <YesNo
         name="dlc"
         label="Include DLC"
         hint="Installers for downloadable content you own."
         value={dlc}
         onChange={setDlc}
-        disabled={busy}
+        disabled={save.busy}
       />
       <YesNo
         name="extras"
@@ -381,33 +378,24 @@ function ContentStep({
         hint="Soundtracks, manuals, wallpapers, artbooks and other bonus content."
         value={extras}
         onChange={setExtras}
-        disabled={busy}
+        disabled={save.busy}
       />
       <div className="field">
-        <span className="field-label" style={{ color: "var(--text)" }}>
-          Languages
+        <span className="field-label">Languages</span>
+        <span className="hint">
+          Installers exist per language; pick every language you want. At least one is required.
         </span>
-        <span className="hint">Installers exist per language; pick every language you want. At least one is required.</span>
         {languagesError ? (
           <span className="err-text small">Could not load the language list: {errorMessage(languagesError)}</span>
         ) : languages.length === 0 ? (
           <Loading text="Loading languages…" />
         ) : null}
-        <div style={{ marginTop: 4 }}>
-          <LanguagePicker options={languages} value={langs} onChange={setLangs} disabled={busy} />
+        <div className="field-body">
+          <LanguagePicker options={languages} value={langs} onChange={setLangs} disabled={save.busy} />
         </div>
       </div>
-      <LanguageFallbackSwitch value={fallback} onChange={setFallback} disabled={busy} />
-      {error && <div className="strip danger">{error}</div>}
-      <div className="wizard-actions">
-        <button className="btn text" onClick={onBack} disabled={busy}>
-          Back
-        </button>
-        <button className="btn primary" onClick={save} disabled={busy || !valid}>
-          {busy && <Spinner />} Continue
-        </button>
-      </div>
-    </div>
+      <LanguageFallbackSwitch value={fallback} onChange={setFallback} disabled={save.busy} />
+    </StepFrame>
   );
 }
 
@@ -424,33 +412,21 @@ function FinishStep({
   onBack: () => void;
   onDone: () => void;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => setError(null), [settings]);
+  const start = useStepSave(completeSetup, onDone);
 
   const langNames = useMemo(
     () => settings.languages.map((c) => languages.find((l) => l.code === c)?.name ?? c).join(", "),
     [settings.languages, languages],
   );
 
-  const start = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await completeSetup();
-      onDone();
-    } catch (e) {
-      setError(errorMessage(e));
-      setBusy(false);
-    }
-  };
-
   return (
-    <div className="wizard-step">
-      <h1 className="page-title">Ready to go</h1>
-      <p className="lead">
-        Here is what gogl-watcher will keep in sync. You can change any of this later under Settings.
-      </p>
+    <StepFrame
+      title="Ready to go"
+      lead="Here is what gogl-watcher will keep in sync. You can change any of this later under Settings."
+      save={start}
+      onBack={onBack}
+      nextLabel="Start"
+    >
       <dl className="kv summary-list">
         <dt>GOG account</dt>
         <dd>{user ? user.username : <span className="err-text">not connected</span>}</dd>
@@ -489,15 +465,6 @@ function FinishStep({
           ? "Starting will fetch your game list right away. Nothing is downloaded until you select games in the library."
           : "Starting will run the first library sync right away and begin downloading installers into the library folder."}
       </p>
-      {error && <div className="strip danger">{error}</div>}
-      <div className="wizard-actions">
-        <button className="btn text" onClick={onBack} disabled={busy}>
-          Back
-        </button>
-        <button className="btn primary" onClick={start} disabled={busy}>
-          {busy && <Spinner />} Start
-        </button>
-      </div>
-    </div>
+    </StepFrame>
   );
 }

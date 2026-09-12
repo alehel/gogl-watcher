@@ -43,14 +43,13 @@ export function AuthorizeForm({ onConnected, currentUser }: Props) {
   return (
     <div className="stack">
       <p className="lead">
-        gogl-watcher signs in the same way GOG Galaxy does. Your credentials never touch this app: you log in on
-        gog.com and paste back the one-time code GOG hands out.
+        gogl-watcher signs in the same way GOG Galaxy does. Your credentials never touch this app: you log in on gog.com
+        and paste back the one-time code GOG hands out.
       </p>
       {currentUser && !connected && (
         <div className="strip info">
           <span>
-            Currently connected as <strong>{currentUser.username}</strong>. Authorizing again replaces the stored
-            token.
+            Currently connected as <strong>{currentUser.username}</strong>. Authorizing again replaces the stored token.
           </span>
         </div>
       )}

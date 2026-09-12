@@ -3,6 +3,7 @@
 package downloader
 
 import (
+	"cmp"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
@@ -62,6 +63,15 @@ type transfer struct {
 	cancel     context.CancelFunc
 }
 
+// progress snapshots the transfer. The caller must hold Manager.mu, which is
+// what guards filename.
+func (t *transfer) progress() Progress {
+	return Progress{
+		FileID: t.file.ID, GameID: t.file.GameID, GameTitle: t.gameTitle, Filename: t.filename,
+		Size: t.size.Load(), Downloaded: t.downloaded.Load(), SpeedBps: float64(t.speed.Load()), StartedAt: t.startedAt,
+	}
+}
+
 // Manager runs the download queue.
 type Manager struct {
 	db    *db.DB
@@ -98,7 +108,7 @@ func New(d *db.DB, g gog.API, paths library.Paths, log *slog.Logger) *Manager {
 func (m *Manager) Configure(s db.Settings, enabled bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.maxActive = s.MaxConcurrentDownloads
+	m.maxActive = max(s.MaxConcurrentDownloads, 1) // a stored 0 would stall the queue
 	m.paused = s.DownloadsPaused
 	m.enabled = enabled
 	limit := int64(s.SpeedLimitKBps) * 1024
@@ -108,10 +118,7 @@ func (m *Manager) Configure(s db.Settings, enabled bool) {
 			m.limiter.SetLimit(rate.Inf)
 			m.limiter.SetBurst(minBurst)
 		} else {
-			burst := int(limit)
-			if burst < minBurst {
-				burst = minBurst
-			}
+			burst := max(int(limit), minBurst)
 			m.limiter.SetLimit(rate.Limit(limit))
 			m.limiter.SetBurst(burst)
 		}
@@ -167,22 +174,20 @@ func (m *Manager) Active() []Progress {
 	defer m.mu.Unlock()
 	out := make([]Progress, 0, len(m.active))
 	for _, t := range m.active {
-		out = append(out, Progress{
-			FileID: t.file.ID, GameID: t.file.GameID, GameTitle: t.gameTitle, Filename: t.filename,
-			Size: t.size.Load(), Downloaded: t.downloaded.Load(), SpeedBps: float64(t.speed.Load()), StartedAt: t.startedAt,
-		})
+		out = append(out, t.progress())
 	}
 	return out
 }
 
 // ProgressFor returns the transfer state of one file, if active.
 func (m *Manager) ProgressFor(fileID int64) (Progress, bool) {
-	for _, p := range m.Active() {
-		if p.FileID == fileID {
-			return p, true
-		}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := m.active[fileID]
+	if t == nil {
+		return Progress{}, false
 	}
-	return Progress{}, false
+	return t.progress(), true
 }
 
 // Cancel aborts the transfer of a file if it is running.
@@ -292,7 +297,7 @@ func (m *Manager) fail(ctx context.Context, t *transfer, title string, err error
 	if errors.As(err, &ae) {
 		// The GOG session failed, not the file: keep it queued for when the user
 		// has re-authorized, without using up an attempt.
-		m.log.Warn("download needs a valid GOG session, will retry", "game", title, "file", firstNonEmpty(t.filename, t.file.Name), "error", err)
+		m.log.Warn("download needs a valid GOG session, will retry", "game", title, "file", cmp.Or(t.filename, t.file.Name), "error", err)
 		_ = m.db.DeferFile(ctx, t.file.ID, err.Error(), time.Minute)
 		return
 	}
@@ -302,98 +307,129 @@ func (m *Manager) fail(ctx context.Context, t *transfer, title string, err error
 		permanent = true
 	}
 	if attempts+1 >= maxAttempts || permanent {
-		m.log.Error("download failed", "game", title, "file", firstNonEmpty(t.filename, t.file.Name), "error", err)
+		m.log.Error("download failed", "game", title, "file", cmp.Or(t.filename, t.file.Name), "error", err)
 		_ = m.db.SetFileError(ctx, t.file.ID, err.Error(), 0)
 		return
 	}
 	wait := time.Duration(30*(1<<uint(attempts))) * time.Second
-	m.log.Warn("download failed, will retry", "game", title, "file", firstNonEmpty(t.filename, t.file.Name), "retry_in", wait, "error", err)
+	m.log.Warn("download failed, will retry", "game", title, "file", cmp.Or(t.filename, t.file.Name), "retry_in", wait, "error", err)
 	_ = m.db.SetFileError(ctx, t.file.ID, err.Error(), wait)
+}
+
+// target is where a transfer is going and what it has to end up being.
+type target struct {
+	name string // the file name GOG gives it
+	rel  string // destination, relative to the library root
+	abs  string
+	part string // the partial download that becomes abs once it is complete
+	size int64  // expected total size (0 when nobody said)
+	md5  string // GOG's checksum ("" when it publishes none, normal for extras)
+}
+
+// remote asks GOG where the file is and what it should end up being. The
+// checksum document is authoritative where GOG publishes one; the name and size
+// are what is known before the transfer is open.
+func (m *Manager) remote(ctx context.Context, f db.File) (*gog.Downlink, target, error) {
+	link, err := m.gog.ResolveDownlink(ctx, f.Downlink)
+	if err != nil {
+		return nil, target{}, fmt.Errorf("resolving download link: %w", err)
+	}
+	t := target{name: gog.FilenameFromURL(link.URL), size: f.Size}
+	if link.ChecksumURL == "" {
+		return link, t, nil
+	}
+	cs, err := m.gog.FetchChecksum(ctx, link.ChecksumURL)
+	if err != nil {
+		m.log.Debug("no checksum available", "file", f.Name, "error", err)
+		return link, t, nil
+	}
+	t.md5 = strings.ToLower(cs.MD5)
+	if cs.TotalSize > 0 {
+		t.size = cs.TotalSize
+	}
+	if cs.Name != "" {
+		t.name = cs.Name
+	}
+	return link, t, nil
+}
+
+// resolve fills in what only the open transfer can say — the name may still have
+// to come from its headers — and with a name, the paths.
+func (t target) resolve(f db.File, game db.Game, dl *gog.Download, paths library.Paths) target {
+	t.name = library.SanitizeFolder(cmp.Or(t.name, dl.Filename, fmt.Sprintf("%s_%s", library.SanitizeFolder(f.Name), f.GogID)))
+	if dl.Length > 0 {
+		t.size = dl.Length
+	}
+	t.rel = library.LocalRelPath(game.Folder, f.RelDir, t.name)
+	t.abs = paths.Abs(t.rel)
+	t.part = t.abs + ".part"
+	return t
+}
+
+// finished reports whether the complete file is already on disk and is really
+// this one, which is what a database reset or an interrupted rename leaves behind.
+func (t target) finished() bool {
+	st, err := os.Stat(t.abs)
+	if err != nil || t.size <= 0 || st.Size() != t.size {
+		return false
+	}
+	return t.md5 == "" || fileMD5(t.abs) == t.md5
 }
 
 func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error {
 	f := t.file
-	link, err := m.gog.ResolveDownlink(ctx, f.Downlink)
+	link, tgt, err := m.remote(ctx, f)
 	if err != nil {
-		return fmt.Errorf("resolving download link: %w", err)
-	}
-	var expectedMD5 string
-	var expectedSize int64 = f.Size
-	filename := gog.FilenameFromURL(link.URL)
-	if link.ChecksumURL != "" {
-		if cs, err := m.gog.FetchChecksum(ctx, link.ChecksumURL); err == nil {
-			expectedMD5 = strings.ToLower(cs.MD5)
-			if cs.TotalSize > 0 {
-				expectedSize = cs.TotalSize
-			}
-			if cs.Name != "" {
-				filename = cs.Name
-			}
-		} else {
-			m.log.Debug("no checksum available", "file", f.Name, "error", err)
-		}
+		return err
 	}
 	// The transfer itself runs under a context that the stall watchdog can cancel
 	// without this looking like a user cancellation.
 	dlCtx, abort := context.WithCancelCause(ctx)
 	defer abort(nil)
-	// Open the transfer first so a Content-Disposition name can be used when the URL has none.
-	partPath := ""
-	var offset int64
 	openWithOffset := func(off int64) (*gog.Download, error) {
 		return m.gog.OpenDownload(dlCtx, link.URL, off)
 	}
+	// Open the transfer first so a Content-Disposition name can be used when the URL has none.
 	dl, err := openWithOffset(0)
 	if err != nil {
 		return fmt.Errorf("opening download: %w", err)
 	}
-	if filename == "" {
-		filename = dl.Filename
-	}
-	if filename == "" {
-		filename = fmt.Sprintf("%s_%s", library.SanitizeFolder(f.Name), f.GogID)
-	}
-	filename = library.SanitizeFolder(filename)
-	if dl.Length > 0 {
-		expectedSize = dl.Length
-	}
-	rel := library.LocalRelPath(game.Folder, f.RelDir, filename)
-	if f.LocalPath != "" && f.LocalPath != rel {
+	tgt = tgt.resolve(f, game, dl, m.paths)
+	if f.LocalPath != "" && f.LocalPath != tgt.rel {
 		// The file used to be planned elsewhere (language folder, renamed DLC);
 		// a partial left there would never be picked up again.
 		m.paths.RemovePart(f.LocalPath)
 	}
-	abs := m.paths.Abs(rel)
-	partPath = abs + ".part"
 	m.mu.Lock()
-	t.filename = filename // read by Active() under the same lock
+	t.filename = tgt.name // read by Active() under the same lock
 	m.mu.Unlock()
-	t.size.Store(expectedSize)
-	if err := m.db.SetFileResolved(ctx, f.ID, filename, rel, expectedMD5, expectedSize); err != nil {
+	t.size.Store(tgt.size)
+	if err := m.db.SetFileResolved(ctx, f.ID, tgt.name, tgt.rel, tgt.md5, tgt.size); err != nil {
 		dl.Body.Close()
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(tgt.abs), 0o755); err != nil {
 		dl.Body.Close()
 		return err
 	}
 	// Already complete on disk (e.g. after a database reset)? Verify and finish.
-	if st, err := os.Stat(abs); err == nil && st.Size() == expectedSize && expectedSize > 0 {
+	if st, err := os.Stat(tgt.abs); err == nil && tgt.size > 0 && st.Size() == tgt.size {
 		dl.Body.Close()
-		if expectedMD5 == "" || fileMD5(abs) == expectedMD5 {
-			m.log.Info("file already present, skipping download", "game", game.Title, "file", filename)
-			_, err := m.complete(ctx, f, rel, expectedSize, game.Title)
+		if tgt.finished() {
+			m.log.Info("file already present, skipping download", "game", game.Title, "file", tgt.name)
+			_, err := m.complete(ctx, f, tgt.rel, tgt.size, game.Title)
 			return err
 		}
-		m.log.Warn("file on disk does not match GOG's checksum, downloading again", "game", game.Title, "file", filename)
-		_ = os.Remove(abs)
+		m.log.Warn("file on disk does not match GOG's checksum, downloading again", "game", game.Title, "file", tgt.name)
+		_ = os.Remove(tgt.abs)
 		// The transfer was closed while hashing; open it again for the download.
 		if dl, err = openWithOffset(0); err != nil {
 			return fmt.Errorf("opening download: %w", err)
 		}
 	}
 	// Resume a partial file when possible.
-	if st, err := os.Stat(partPath); err == nil && st.Size() > 0 && st.Size() < expectedSize {
+	var offset int64
+	if st, err := os.Stat(tgt.part); err == nil && st.Size() > 0 && st.Size() < tgt.size {
 		dl.Body.Close()
 		offset = st.Size()
 		dl, err = openWithOffset(offset)
@@ -402,45 +438,74 @@ func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error
 				dl.Body.Close()
 			}
 			offset = 0
-			_ = os.Remove(partPath)
+			_ = os.Remove(tgt.part)
 			dl, err = openWithOffset(0)
 		}
 		if err != nil {
 			return fmt.Errorf("resuming download: %w", err)
 		}
 	} else if err == nil {
-		_ = os.Remove(partPath)
+		_ = os.Remove(tgt.part)
 	}
 	defer dl.Body.Close()
-	if err := m.checkSpace(abs, expectedSize-offset); err != nil {
+	if err := m.checkSpace(tgt.abs, tgt.size-offset); err != nil {
 		return err
 	}
+	written, err := m.writePart(ctx, dlCtx, abort, tgt, dl, offset, t, game.Title)
+	if err != nil {
+		return err
+	}
+	total := offset + written
+	if tgt.size > 0 && total != tgt.size {
+		_ = os.Remove(tgt.part)
+		return fmt.Errorf("size mismatch: got %d bytes, expected %d", total, tgt.size)
+	}
+	if err := os.Rename(tgt.part, tgt.abs); err != nil {
+		return err
+	}
+	ok, err := m.complete(ctx, f, tgt.rel, total, game.Title)
+	if err != nil || !ok {
+		if !ok {
+			// What was downloaded is the old build; the row is pending for the new one.
+			_ = os.Remove(tgt.abs)
+		}
+		return err
+	}
+	m.log.Info("download complete", "game", game.Title, "file", tgt.name, "size", total)
+	return nil
+}
+
+// writePart streams the open transfer into the partial file, appending to the
+// offset bytes that are already there, and holds the result against GOG's
+// checksum. A partial file that fails the check is removed: resuming it would
+// only produce the same bad file again.
+func (m *Manager) writePart(ctx, dlCtx context.Context, abort context.CancelCauseFunc, tgt target, dl *gog.Download, offset int64, t *transfer, title string) (int64, error) {
 	flags := os.O_CREATE | os.O_WRONLY
 	if offset > 0 {
 		flags |= os.O_APPEND
 	} else {
 		flags |= os.O_TRUNC
 	}
-	out, err := os.OpenFile(partPath, flags, 0o644)
+	out, err := os.OpenFile(tgt.part, flags, 0o644)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var hasher hash.Hash
-	if expectedMD5 != "" {
+	if tgt.md5 != "" {
 		hasher = md5.New()
 		if offset > 0 {
 			// Hash the part we already have.
-			if err := hashFile(partPath, hasher, offset); err != nil {
+			if err := hashFile(tgt.part, hasher, offset); err != nil {
 				out.Close()
-				return err
+				return 0, err
 			}
 		}
 	}
 	t.downloaded.Store(offset)
 	if offset > 0 {
-		m.log.Info("resuming download", "game", game.Title, "file", filename, "offset", offset)
+		m.log.Info("resuming download", "game", title, "file", tgt.name, "offset", offset)
 	} else {
-		m.log.Info("downloading", "game", game.Title, "file", filename, "size", expectedSize)
+		m.log.Info("downloading", "game", title, "file", tgt.name, "size", tgt.size)
 	}
 	stopSpeed := m.trackSpeed(ctx, t)
 	written, err := m.copy(ctx, dlCtx, abort, out, dl.Body, hasher, t)
@@ -455,32 +520,15 @@ func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error
 		err = cerr
 	}
 	if err != nil {
-		return err
-	}
-	total := offset + written
-	if expectedSize > 0 && total != expectedSize {
-		_ = os.Remove(partPath)
-		return fmt.Errorf("size mismatch: got %d bytes, expected %d", total, expectedSize)
+		return written, err
 	}
 	if hasher != nil {
-		if got := hex.EncodeToString(hasher.Sum(nil)); got != expectedMD5 {
-			_ = os.Remove(partPath)
-			return fmt.Errorf("checksum mismatch: got %s, expected %s", got, expectedMD5)
+		if got := hex.EncodeToString(hasher.Sum(nil)); got != tgt.md5 {
+			_ = os.Remove(tgt.part)
+			return written, fmt.Errorf("checksum mismatch: got %s, expected %s", got, tgt.md5)
 		}
 	}
-	if err := os.Rename(partPath, abs); err != nil {
-		return err
-	}
-	ok, err := m.complete(ctx, f, rel, total, game.Title)
-	if err != nil || !ok {
-		if !ok {
-			// What was downloaded is the old build; the row is pending for the new one.
-			_ = os.Remove(abs)
-		}
-		return err
-	}
-	m.log.Info("download complete", "game", game.Title, "file", filename, "size", total)
-	return nil
+	return written, nil
 }
 
 // complete records the file as done unless a sync replaced its version or download
@@ -619,11 +667,4 @@ func fileMD5(path string) string {
 		return ""
 	}
 	return hex.EncodeToString(h.Sum(nil))
-}
-
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }

@@ -71,6 +71,7 @@ downloading everything. The environment only controls *where* and *how* the proc
 | `DATA_DIR` | `/data` | SQLite database (settings, tokens, file state, logs) |
 | `LIBRARY_DIR` | `/library` | Where game folders are created |
 | `PORT` | `8080` | HTTP port |
+| `LISTEN` | `:$PORT` | Full listen address; set it to bind one interface (`127.0.0.1:8080`) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `STARTUP_SYNC_DELAY_SECONDS` | `15` | Delay before the first scheduled check after boot |
 | `MOCK_GOG` | unset | Set to `1` to run against a fake library (demo mode, no GOG account needed) |

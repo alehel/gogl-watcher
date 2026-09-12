@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -225,6 +226,25 @@ const (
 	DownloadSelected = "selected" // only games the user selected
 )
 
+// Platforms are the installer platforms the application knows, in the order the
+// UI lists them.
+var Platforms = []string{"windows", "mac", "linux"}
+
+// NormalizePlatform maps the spellings that turn up — GOG's installer metadata,
+// the settings API, settings stored by an older version — onto one of Platforms,
+// or "" when the value is none of them.
+func NormalizePlatform(os string) string {
+	switch strings.ToLower(strings.TrimSpace(os)) {
+	case "windows", "win":
+		return "windows"
+	case "mac", "osx", "macos":
+		return "mac"
+	case "linux":
+		return "linux"
+	}
+	return ""
+}
+
 // Settings are the user-editable options shown in the UI.
 type Settings struct {
 	// DownloadMode is "all" or "selected"; empty until the setup wizard asked.
@@ -259,14 +279,10 @@ func DefaultSettings() Settings {
 func (s *Settings) Normalize() error {
 	seen := map[string]bool{}
 	var plats []string
-	for _, p := range s.Platforms {
-		p = strings.ToLower(strings.TrimSpace(p))
-		switch p {
-		case "windows", "mac", "linux":
-		case "osx", "macos":
-			p = "mac"
-		default:
-			return fmt.Errorf("unknown platform %q", p)
+	for _, raw := range s.Platforms {
+		p := NormalizePlatform(raw)
+		if p == "" {
+			return fmt.Errorf("unknown platform %q", raw)
 		}
 		if !seen[p] {
 			seen[p] = true
@@ -348,24 +364,10 @@ func (s Settings) WantsGame(g Game) bool {
 }
 
 // WantsPlatform reports whether os is selected.
-func (s Settings) WantsPlatform(os string) bool {
-	for _, p := range s.Platforms {
-		if p == os {
-			return true
-		}
-	}
-	return false
-}
+func (s Settings) WantsPlatform(os string) bool { return slices.Contains(s.Platforms, os) }
 
 // WantsLanguage reports whether lang is selected.
-func (s Settings) WantsLanguage(lang string) bool {
-	for _, l := range s.Languages {
-		if l == lang {
-			return true
-		}
-	}
-	return false
-}
+func (s Settings) WantsLanguage(lang string) bool { return slices.Contains(s.Languages, lang) }
 
 // GetSettings loads the stored settings, falling back to defaults.
 func (d *DB) GetSettings(ctx context.Context) (Settings, error) {
@@ -498,7 +500,7 @@ type Game struct {
 
 // WorksOn reports whether GOG lists the game as running on a platform.
 func (g Game) WorksOn(os string) bool {
-	switch os {
+	switch NormalizePlatform(os) {
 	case "windows":
 		return g.WorksWindows
 	case "mac":
@@ -594,39 +596,16 @@ func (d *DB) ListGames(ctx context.Context) ([]Game, error) {
 	return out, rows.Err()
 }
 
-// ListGameIDs returns every game id.
-func (d *DB) ListGameIDs(ctx context.Context, ownedOnly bool) ([]int64, error) {
-	q := `SELECT id FROM games`
-	if ownedOnly {
-		q += ` WHERE owned = 1`
-	}
-	rows, err := d.QueryContext(ctx, q+` ORDER BY title COLLATE NOCASE`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
-
 // SetGamesSelected marks the given games as selected (or not) for download.
 func (d *DB) SetGamesSelected(ctx context.Context, ids []int64, selected bool) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	ph := strings.Repeat("?,", len(ids))
 	args := []any{b2i(selected), time.Now().UnixMilli()}
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	_, err := d.ExecContext(ctx, `UPDATE games SET selected = ?, updated_at = ? WHERE id IN (`+ph[:len(ph)-1]+`)`, args...)
+	_, err := d.ExecContext(ctx, `UPDATE games SET selected = ?, updated_at = ? WHERE id IN (`+placeholders(len(ids))+`)`, args...)
 	return err
 }
 
@@ -635,13 +614,11 @@ func (d *DB) MarkGamesNotOwned(ctx context.Context, keep []int64) error {
 	if len(keep) == 0 {
 		return nil
 	}
-	ph := strings.Repeat("?,", len(keep))
-	ph = ph[:len(ph)-1]
 	args := make([]any, len(keep))
 	for i, id := range keep {
 		args[i] = id
 	}
-	_, err := d.ExecContext(ctx, `UPDATE games SET owned = 0 WHERE id NOT IN (`+ph+`)`, args...)
+	_, err := d.ExecContext(ctx, `UPDATE games SET owned = 0 WHERE id NOT IN (`+placeholders(len(keep))+`)`, args...)
 	return err
 }
 
@@ -970,19 +947,19 @@ func (d *DB) NextPendingFiles(ctx context.Context, limit int, exclude []int64) (
 	where := `WHERE status = 'pending' AND active = 1 AND next_attempt_at <= ?`
 	args := []any{now}
 	if len(exclude) > 0 {
-		ph := strings.Repeat("?,", len(exclude))
-		where += ` AND id NOT IN (` + ph[:len(ph)-1] + `)`
+		where += ` AND id NOT IN (` + placeholders(len(exclude)) + `)`
 		for _, id := range exclude {
 			args = append(args, id)
 		}
 	}
-	// Prefer finishing games that are already partially downloaded, then small files first.
+	// Keep a game's files together (so one game finishes before the next starts),
+	// and take its small files first.
 	where += ` ORDER BY game_id, size LIMIT ?`
 	args = append(args, limit)
 	return d.queryFiles(ctx, where, args...)
 }
 
-// CountFiles returns counts of pending/error/done active files.
+// CountFilesByStatus returns counts of pending/error/done active files.
 func (d *DB) CountFilesByStatus(ctx context.Context) (map[string]int, error) {
 	rows, err := d.QueryContext(ctx, `SELECT status, COUNT(*) FROM files WHERE active = 1 GROUP BY status`)
 	if err != nil {
@@ -1053,68 +1030,98 @@ func (d *DB) UpsertDesiredFileVerified(ctx context.Context, f File, localExists 
 		return UpsertFileResult{ID: id, Inserted: true}, nil
 	}
 	e := existing[0]
-	status := e.Status
-	prev := e.PreviousPath
-	updated := false
-	// GOG's manifest sizes are not byte-exact, and the downloader replaces size
-	// with the real byte count once it knows it, so a size change is only ever
-	// detected between two manifest sizes. A stored manifest size of 0 is unknown
-	// (rows from before the column existed, manifests without a size) and never
-	// counts as a change.
-	sizeChanged := f.Size > 0 && e.ManifestSize > 0 && e.ManifestSize != f.Size
-	changed := e.Version != f.Version || sizeChanged
-	// Re-activated by a settings change: keep the file if it is still on disk
-	// and is really this version (a remembered previous_path means the copy on
-	// disk is an older build that was waiting to be replaced).
-	reactivating := !e.Active || status == StatusInactive
-	kept := reactivating && e.LocalPath != "" && e.PreviousPath == "" && localExists(e.LocalPath)
+	onDisk := e.LocalPath != "" && localExists(e.LocalPath)
+	changed := metadataChange(e, f)
 	// A copy on disk can be held against GOG's checksum, which is the only
-	// authoritative answer; the metadata comparison above is a guess that can be
-	// wrong in either direction. Nothing else is worth a request: a file that is
-	// not downloaded is fetched whatever the answer would be.
-	if verify != nil && e.MD5 != "" && ((e.Active && status == StatusDone && e.LocalPath != "") || kept) {
+	// authoritative answer; the metadata comparison is a guess that can be wrong
+	// in either direction. Nothing else is worth a request: a file that is not
+	// downloaded is fetched whatever the answer would be.
+	if verify != nil && e.MD5 != "" && ((e.Active && e.Status == StatusDone && e.LocalPath != "") || keptCopy(e, onDisk)) {
 		if got, err := verify(ctx, e, f, changed); err == nil {
 			changed = got
 		}
 	}
-	if reactivating {
-		if kept && !changed {
-			status = StatusDone
-		} else {
-			status = StatusPending
-			if kept {
-				// The kept copy is an older build: replace it once the new one is in place.
-				prev = e.LocalPath
-				updated = true
-			}
-		}
-	}
-	if (status == StatusDone || status == StatusError) && changed {
-		// A new build also supersedes a failed attempt at the old one.
-		if status == StatusDone {
-			prev = e.LocalPath
-		}
-		status = StatusPending
-		updated = true
-	}
-	if status == StatusDone && e.LocalPath != "" && !localExists(e.LocalPath) {
-		status = StatusPending
-	}
-	size := f.Size
-	if !changed && e.LocalPath != "" && e.Size > 0 {
-		// The transfer already measured the real size; the manifest is an estimate.
-		size = e.Size
-	}
+	u := planUpsert(e, f, changed, onDisk)
 	_, err = d.ExecContext(ctx, `UPDATE files SET game_id = ?, os = ?, language = ?, name = ?, version = ?, size = ?, manifest_size = ?, downlink = ?, rel_dir = ?,
 		status = ?, active = 1, previous_path = ?, error = CASE WHEN ? = 'pending' AND status <> 'pending' THEN '' ELSE error END,
 		attempts = CASE WHEN ? = 'pending' AND status <> 'pending' THEN 0 ELSE attempts END, next_attempt_at = 0, updated_at = ? WHERE id = ?`,
-		f.GameID, f.OS, f.Language, f.Name, f.Version, size, f.Size, f.Downlink, f.RelDir, status, prev, status, status, now, e.ID)
+		f.GameID, f.OS, f.Language, f.Name, f.Version, u.size, f.Size, f.Downlink, f.RelDir, u.status, u.prev, u.status, u.status, now, e.ID)
 	if err != nil {
 		return UpsertFileResult{}, err
 	}
 	// A failed row keeps its partial file too, so a new build must discard it as well.
 	changedWhilePending := e.Active && (e.Status == StatusPending || e.Status == StatusError) && (changed || e.Downlink != f.Downlink)
-	return UpsertFileResult{ID: e.ID, Updated: updated, Changed: changedWhilePending, LocalPath: e.LocalPath}, nil
+	return UpsertFileResult{ID: e.ID, Updated: u.updated, Changed: changedWhilePending, LocalPath: e.LocalPath}, nil
+}
+
+// metadataChange is what GOG's manifest alone says about whether the file was
+// replaced. GOG's manifest sizes are not byte-exact, and the downloader replaces
+// size with the real byte count once it knows it, so a size change is only ever
+// detected between two manifest sizes. A stored manifest size of 0 is unknown
+// (rows from before the column existed, manifests without a size) and never
+// counts as a change.
+func metadataChange(stored, next File) bool {
+	sizeChanged := next.Size > 0 && stored.ManifestSize > 0 && stored.ManifestSize != next.Size
+	return stored.Version != next.Version || sizeChanged
+}
+
+// reactivated reports whether a settings change is bringing a dropped row back.
+func reactivated(stored File) bool { return !stored.Active || stored.Status == StatusInactive }
+
+// keptCopy reports whether such a row still has its own download on disk. A
+// remembered previous_path means the copy there is an older build that was
+// waiting to be replaced, so it is not this file.
+func keptCopy(stored File, onDisk bool) bool {
+	return reactivated(stored) && stored.PreviousPath == "" && onDisk
+}
+
+// fileUpdate is what an incoming file does to the row that is already stored.
+type fileUpdate struct {
+	status string
+	// prev is the downloaded copy that the next successful download replaces,
+	// kept until then so an update never leaves the game without an installer.
+	prev string
+	// size is the best size to record: see metadataChange on why the stored one
+	// can be better than the one GOG just sent.
+	size int64
+	// updated marks a file that was downloaded and now has to be fetched again.
+	updated bool
+}
+
+// planUpsert decides what the file GOG offers now (next) means for the row that
+// is stored (stored). changed says whether it really is another build — the
+// checksum's answer where there is one, GOG's metadata otherwise — and onDisk
+// whether the row's local_path is still there. It touches nothing: every input
+// is already in hand, so the rules can be read, and tested, on their own.
+func planUpsert(stored, next File, changed, onDisk bool) fileUpdate {
+	u := fileUpdate{status: stored.Status, prev: stored.PreviousPath, size: next.Size}
+	kept := keptCopy(stored, onDisk)
+	if reactivated(stored) {
+		switch {
+		case kept && !changed:
+			u.status = StatusDone
+		case kept:
+			// The kept copy is an older build: replace it once the new one is in place.
+			u.status, u.prev, u.updated = StatusPending, stored.LocalPath, true
+		default:
+			u.status = StatusPending
+		}
+	}
+	if (u.status == StatusDone || u.status == StatusError) && changed {
+		// A new build also supersedes a failed attempt at the old one.
+		if u.status == StatusDone {
+			u.prev = stored.LocalPath
+		}
+		u.status, u.updated = StatusPending, true
+	}
+	if u.status == StatusDone && stored.LocalPath != "" && !onDisk {
+		u.status = StatusPending
+	}
+	if !changed && stored.LocalPath != "" && stored.Size > 0 {
+		// The transfer already measured the real size; the manifest is an estimate.
+		u.size = stored.Size
+	}
+	return u
 }
 
 // DeactivateOtherFiles marks active files of the game not in keepIDs as inactive
@@ -1131,19 +1138,16 @@ func (d *DB) DeactivateOtherFiles(ctx context.Context, gameID int64, keepIDs []i
 		return nil, err
 	}
 	var out []File
-	now := time.Now().UnixMilli()
 	for _, f := range files {
 		if keep[f.ID] {
 			continue
 		}
 		if (f.Status == StatusDone && f.LocalPath != "") || f.PreviousPath != "" {
-			if _, err := d.ExecContext(ctx, `UPDATE files SET active = 0, status = 'inactive', updated_at = ? WHERE id = ?`, now, f.ID); err != nil {
+			if err := d.SetFileInactive(ctx, f.ID); err != nil {
 				return nil, err
 			}
-		} else {
-			if _, err := d.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, f.ID); err != nil {
-				return nil, err
-			}
+		} else if err := d.DeleteFile(ctx, f.ID); err != nil {
+			return nil, err
 		}
 		out = append(out, f)
 	}
@@ -1169,13 +1173,18 @@ func (d *DB) SetFileResolved(ctx context.Context, id int64, filename, localPath,
 	return err
 }
 
-// SetFileDone marks a download complete.
+// fileDoneSet is the SET clause that marks a file as downloaded. A finished
+// transfer has just been held against GOG's checksum, so it counts as verified:
+// the rolling re-check belongs to files that have sat on disk.
+const fileDoneSet = `SET status = 'done', local_path = ?, size = ?, previous_path = '', error = '', attempts = 0,
+	next_attempt_at = 0, downloaded_at = ?, verified_at = ?, updated_at = ?`
+
+// SetFileDone marks a download complete unconditionally. The downloader uses
+// CompleteFile instead; this is for callers that own the row already (tests,
+// and repairs that do not go through a transfer).
 func (d *DB) SetFileDone(ctx context.Context, id int64, localPath string, size int64) error {
 	now := time.Now().UnixMilli()
-	// A finished transfer has just been held against GOG's checksum, so it counts
-	// as verified: the rolling re-check belongs to files that have sat on disk.
-	_, err := d.ExecContext(ctx, `UPDATE files SET status = 'done', local_path = ?, size = ?, previous_path = '', error = '', attempts = 0,
-		next_attempt_at = 0, downloaded_at = ?, verified_at = ?, updated_at = ? WHERE id = ?`, localPath, size, now, now, now, id)
+	_, err := d.ExecContext(ctx, `UPDATE files `+fileDoneSet+` WHERE id = ?`, localPath, size, now, now, now, id)
 	return err
 }
 
@@ -1185,8 +1194,8 @@ func (d *DB) SetFileDone(ctx context.Context, id int64, localPath string, size i
 // then left pending for the new version.
 func (d *DB) CompleteFile(ctx context.Context, id int64, localPath string, size int64, downlink, version string) (bool, error) {
 	now := time.Now().UnixMilli()
-	res, err := d.ExecContext(ctx, `UPDATE files SET status = 'done', local_path = ?, size = ?, previous_path = '', error = '', attempts = 0,
-		next_attempt_at = 0, downloaded_at = ?, verified_at = ?, updated_at = ? WHERE id = ? AND downlink = ? AND version = ?`, localPath, size, now, now, now, id, downlink, version)
+	res, err := d.ExecContext(ctx, `UPDATE files `+fileDoneSet+` WHERE id = ? AND downlink = ? AND version = ?`,
+		localPath, size, now, now, now, id, downlink, version)
 	if err != nil {
 		return false, err
 	}
@@ -1255,11 +1264,9 @@ func (d *DB) MarkMissingDone(ctx context.Context, exists func(path string) bool)
 	return n, nil
 }
 
-// LibraryTotals aggregates bytes over active files.
-func (d *DB) LibraryTotals(ctx context.Context) (bytesTotal, bytesDone int64, err error) {
-	err = d.QueryRowContext(ctx, `SELECT COALESCE(SUM(size),0), COALESCE(SUM(CASE WHEN status='done' THEN size ELSE 0 END),0) FROM files WHERE active = 1`).
-		Scan(&bytesTotal, &bytesDone)
-	return
+// placeholders returns "?,?,…" for an IN clause of n values.
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
 func b2i(b bool) int {

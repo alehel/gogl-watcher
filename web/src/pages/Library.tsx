@@ -1,14 +1,14 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { getGames, type GameSort, type GameStatus, type GameSummary } from "../api";
-import { ApiErrorNotice, EmptyState, Loading, TimeAgo } from "../components/Common";
+import { ApiErrorNotice, CoverImage, EmptyState, Loading, TimeAgo } from "../components/Common";
 import { DataTable } from "../components/DataTable";
 import { ProgressBar } from "../components/ProgressBar";
 import { useGameSelection } from "../components/Selection";
 import { GameStatusDot, gameStatusLabel, gameStatusTone } from "../components/StatusDot";
 import { useStatus } from "../components/StatusContext";
 import { formatBytes, platformsText, plural } from "../format";
-import { useDebounced, usePolling } from "../hooks";
+import { useDebounced, useLocalStorage, usePolling } from "../hooks";
 
 const STATUSES: GameStatus[] = [
   "complete",
@@ -23,22 +23,6 @@ const STATUSES: GameStatus[] = [
 type View = "table" | "grid";
 const VIEW_KEY = "gogl-watcher.libraryView";
 const DOWNLOADED_FIRST_KEY = "gogl-watcher.libraryDownloadedFirst";
-
-function readView(): View {
-  try {
-    return localStorage.getItem(VIEW_KEY) === "grid" ? "grid" : "table";
-  } catch {
-    return "table";
-  }
-}
-
-function readDownloadedFirst(): boolean {
-  try {
-    return localStorage.getItem(DOWNLOADED_FIRST_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
 
 function inProgress(g: GameSummary): boolean {
   return g.status !== "complete" && g.status !== "unavailable" && g.status !== "unsynced" && g.status !== "unselected";
@@ -81,27 +65,9 @@ export function LibraryPage() {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<GameStatus | "">("");
   const [sort, setSort] = useState<GameSort>("title");
-  const [downloadedFirst, setDownloadedFirstState] = useState<boolean>(readDownloadedFirst);
-  const [view, setViewState] = useState<View>(readView);
+  const [downloadedFirst, setDownloadedFirst] = useLocalStorage(DOWNLOADED_FIRST_KEY, false);
+  const [view, setView] = useLocalStorage<View>(VIEW_KEY, "table");
   const dq = useDebounced(q.trim(), 250);
-
-  const setView = (v: View) => {
-    setViewState(v);
-    try {
-      localStorage.setItem(VIEW_KEY, v);
-    } catch {
-      /* ignore */
-    }
-  };
-
-  const setDownloadedFirst = (on: boolean) => {
-    setDownloadedFirstState(on);
-    try {
-      localStorage.setItem(DOWNLOADED_FIRST_KEY, on ? "1" : "0");
-    } catch {
-      /* ignore */
-    }
-  };
 
   const games = usePolling(
     () => getGames({ q: dq, status: filter, sort, downloaded_first: downloadedFirst || undefined }),
@@ -132,6 +98,42 @@ export function LibraryPage() {
 
   const list = games.data?.games ?? [];
   const nothingSelected = selectedOnly && !!totals && totals.games > 0 && totals.unselected === totals.games;
+
+  let body: ReactNode;
+  if (games.loading && !games.data) {
+    body = <Loading text="Loading library…" />;
+  } else if (list.length === 0) {
+    body = (
+      <EmptyState>
+        {dq || filter
+          ? "No games match this search or filter."
+          : "Your GOG library shows up here after the first sync finishes."}
+      </EmptyState>
+    );
+  } else if (view === "grid") {
+    body = (
+      <div className="lib-grid">
+        {list.map((g) => (
+          <GridItem
+            key={g.id}
+            game={g}
+            selectable={selectedOnly}
+            busy={selection.busy}
+            onSelect={(on) => void selection.setSelection([g.id], on)}
+          />
+        ))}
+      </div>
+    );
+  } else {
+    body = (
+      <GamesTable
+        games={list}
+        selectable={selectedOnly}
+        busy={selection.busy}
+        onSelect={(ids, on) => void selection.setSelection(ids, on)}
+      />
+    );
+  }
 
   return (
     <div className="stack">
@@ -195,44 +197,7 @@ export function LibraryPage() {
       )}
       {selection.modal}
 
-      {games.loading && !games.data ? (
-        <Loading text="Loading library…" />
-      ) : list.length === 0 ? (
-        <EmptyState>
-          {dq || filter
-            ? "No games match this search or filter."
-            : "Your GOG library shows up here after the first sync finishes."}
-        </EmptyState>
-      ) : view === "grid" ? (
-        <div className="lib-grid">
-          {list.map((g) => (
-            <GridItem
-              key={g.id}
-              game={g}
-              selectable={selectedOnly}
-              busy={selection.busy}
-              onSelect={(on) => void selection.setSelection([g.id], on)}
-            />
-          ))}
-        </div>
-      ) : (
-        <GamesTable
-          games={list}
-          selectable={selectedOnly}
-          busy={selection.busy}
-          onSelect={(ids, on) => void selection.setSelection(ids, on)}
-        />
-      )}
-    </div>
-  );
-}
-
-function Thumb({ game, className }: { game: GameSummary; className: string }) {
-  const [broken, setBroken] = useState(false);
-  const show = !!game.image && !broken;
-  return (
-    <div className={className}>
-      {show && <img src={game.image ?? undefined} alt="" loading="lazy" onError={() => setBroken(true)} />}
+      {body}
     </div>
   );
 }
@@ -302,7 +267,9 @@ function GamesTable({
               </td>
             )}
             <td className="thumb-cell">
-              <Thumb game={g} className="thumb" />
+              <div className="thumb">
+                <CoverImage src={g.image} lazy />
+              </div>
             </td>
             <td className="wrap">
               <Link to={`/library/${g.id}`}>{g.title}</Link>
@@ -315,7 +282,9 @@ function GamesTable({
             <td>
               <GameStatusDot status={g.status} />
             </td>
-            <td>{inProgress(g) ? <ProgressBar value={g.progress} showPercent tone={gameStatusTone(g.status)} /> : null}</td>
+            <td>
+              {inProgress(g) ? <ProgressBar value={g.progress} showPercent tone={gameStatusTone(g.status)} /> : null}
+            </td>
             <td className="muted">
               <TimeAgo iso={g.last_synced_at} />
             </td>
@@ -337,13 +306,11 @@ function GridItem({
   busy: boolean;
   onSelect: (selected: boolean) => void;
 }) {
-  const [broken, setBroken] = useState(false);
-  const show = !!game.image && !broken;
   return (
     <div className={`grid-cell${selectable && !game.selected ? " dim" : ""}`}>
       <Link to={`/library/${game.id}`} className="grid-item">
         <div className="cover">
-          {show && <img src={game.image ?? undefined} alt="" loading="lazy" onError={() => setBroken(true)} />}
+          <CoverImage src={game.image} lazy />
           {inProgress(game) && <ProgressBar line value={game.progress} tone={gameStatusTone(game.status)} />}
         </div>
         <div className="title" title={game.title}>
