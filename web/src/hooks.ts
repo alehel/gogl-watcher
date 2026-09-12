@@ -25,7 +25,9 @@ export function usePolling<T>(
   const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
   const fnRef = useRef(fn);
-  fnRef.current = fn;
+  useEffect(() => {
+    fnRef.current = fn;
+  });
 
   useEffect(() => {
     if (!enabled) return;
@@ -86,6 +88,36 @@ export function useDebounced<T>(value: T, ms = 300): T {
   return v;
 }
 
+/**
+ * State kept in localStorage, which can be unavailable (private windows, blocked
+ * site data) or hold something written by an older version: either way the value
+ * falls back to `initial` and only lives for this page.
+ */
+export function useLocalStorage<T>(key: string, initial: T): [T, (v: T) => void] {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw === null) return initial;
+      const parsed: unknown = JSON.parse(raw);
+      return typeof parsed === typeof initial ? (parsed as T) : initial;
+    } catch {
+      return initial;
+    }
+  });
+  const set = useCallback(
+    (v: T) => {
+      setValue(v);
+      try {
+        localStorage.setItem(key, JSON.stringify(v));
+      } catch {
+        /* not available; the choice lasts for this page */
+      }
+    },
+    [key],
+  );
+  return [value, set];
+}
+
 /** Tracks a media query. */
 export function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() =>
@@ -102,11 +134,11 @@ export function useMediaQuery(query: string): boolean {
 }
 
 /** Wraps an async action with pending/error state, for buttons. */
-export function useAction<A extends unknown[]>(action: (...args: A) => Promise<unknown>) {
+export function useAction<A extends unknown[], R>(action: (...args: A) => Promise<R>) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const run = useCallback(
-    async (...args: A) => {
+    async (...args: A): Promise<R> => {
       setPending(true);
       setError(null);
       try {

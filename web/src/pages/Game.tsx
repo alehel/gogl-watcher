@@ -1,36 +1,24 @@
-import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import {
-  ApiError,
-  errorMessage,
-  getGame,
-  retryFile,
-  retryGame,
-  syncGame,
-  type GameFile,
-  type Product,
-} from "../api";
-import { ApiErrorNotice, EmptyState, Loading, Spinner, TimeAgo } from "../components/Common";
+import { ApiError, getGame, retryFile, retryGame, syncGame, type GameFile, type Product } from "../api";
+import { ApiErrorNotice, CoverImage, EmptyState, Loading, Spinner, TimeAgo } from "../components/Common";
 import { DataTable } from "../components/DataTable";
 import { IconBack } from "../components/Icons";
 import { ProgressBar } from "../components/ProgressBar";
 import { useGameSelection } from "../components/Selection";
 import { FileStatusDot, GameStatusDot, gameStatusTone } from "../components/StatusDot";
 import { useStatus } from "../components/StatusContext";
-import { useToast } from "../components/Toast";
+import { useToastAction } from "../components/Toast";
 import { formatBytes, formatRelative, formatSpeed, platformLabel, platformsText, plural, ratio } from "../format";
-import { useAction, useNow, usePolling } from "../hooks";
+import { useNow, usePolling } from "../hooks";
 
 export function GamePage() {
   const { id = "" } = useParams();
-  const toast = useToast();
   const { status, refresh: refreshStatus } = useStatus();
   const game = usePolling(() => getGame(id), 2000, [id]);
-  const [broken, setBroken] = useState(false);
   const now = useNow();
 
-  const sync = useAction(() => syncGame(id));
-  const retry = useAction(() => retryGame(id));
+  const sync = useToastAction(() => syncGame(id), { success: "Re-checking on GOG…", onDone: game.refresh });
+  const retry = useToastAction(() => retryGame(id), { success: "Failed files queued again", onDone: game.refresh });
   const selection = useGameSelection(() => {
     game.refresh();
     refreshStatus();
@@ -70,8 +58,8 @@ export function GamePage() {
   const { game: g, products } = game.data;
   const unselected = g.status === "unselected";
   const hasErrors = products.some((p) => p.files.some((f) => f.status === "error"));
+  const hasFiles = products.some((p) => p.files.length > 0);
   const sorted = [...products].sort((a, b) => Number(a.is_dlc) - Number(b.is_dlc) || a.title.localeCompare(b.title));
-  const showImg = !!g.image && !broken;
 
   const meta = [
     platformsText(g.works_on, true) || null,
@@ -84,25 +72,6 @@ export function GamePage() {
         ]),
   ].filter(Boolean);
 
-  const doSync = async () => {
-    try {
-      await sync.run();
-      toast.success("Re-checking on GOG…");
-      game.refresh();
-    } catch (e) {
-      toast.error(errorMessage(e));
-    }
-  };
-  const doRetry = async () => {
-    try {
-      await retry.run();
-      toast.success("Failed files queued again");
-      game.refresh();
-    } catch (e) {
-      toast.error(errorMessage(e));
-    }
-  };
-
   return (
     <div className="stack">
       <div>{back}</div>
@@ -111,7 +80,7 @@ export function GamePage() {
 
       <div className="game-head">
         <div className="game-cover">
-          {showImg && <img src={g.image ?? undefined} alt="" onError={() => setBroken(true)} />}
+          <CoverImage src={g.image} />
         </div>
         <div className="game-info">
           <h1 className="page-title">{g.title}</h1>
@@ -142,12 +111,12 @@ export function GamePage() {
                 </button>
               ))}
             {!unselected && (
-              <button className="btn" onClick={doSync} disabled={sync.pending}>
+              <button className="btn" onClick={() => void sync.run()} disabled={sync.pending}>
                 {sync.pending && <Spinner />} Re-check on GOG
               </button>
             )}
             {hasErrors && (
-              <button className="btn danger" onClick={doRetry} disabled={retry.pending}>
+              <button className="btn danger" onClick={() => void retry.run()} disabled={retry.pending}>
                 {retry.pending && <Spinner />} Retry failed
               </button>
             )}
@@ -155,21 +124,23 @@ export function GamePage() {
         </div>
       </div>
 
-      {unselected ? (
+      {unselected && (
         <EmptyState>
           This game is not selected for download. Select it to fetch its installers
-          {products.some((p) => p.files.length > 0) ? "; files kept from before are listed below as inactive." : "."}
+          {hasFiles ? "; files kept from before are listed below as inactive." : "."}
         </EmptyState>
-      ) : null}
-      {unselected && !products.some((p) => p.files.length > 0) ? null : sorted.length === 0 ? (
-        <EmptyState>
-          {g.status === "unsynced"
-            ? "Details for this game have not been fetched yet. Use “Re-check on GOG” to fetch them now."
-            : "GOG offers no files for this game that match the chosen platforms and languages."}
-        </EmptyState>
-      ) : (
-        sorted.map((p) => <ProductSection key={p.id} product={p} onChanged={game.refresh} />)
       )}
+      {/* An unselected game with nothing on disk has said all there is to say above. */}
+      {(!unselected || hasFiles) &&
+        (sorted.length === 0 ? (
+          <EmptyState>
+            {g.status === "unsynced"
+              ? "Details for this game have not been fetched yet. Use “Re-check on GOG” to fetch them now."
+              : "GOG offers no files for this game that match the chosen platforms and languages."}
+          </EmptyState>
+        ) : (
+          sorted.map((p) => <ProductSection key={p.id} product={p} onChanged={game.refresh} />)
+        ))}
     </div>
   );
 }
@@ -218,17 +189,7 @@ function ProductSection({ product, onChanged }: { product: Product; onChanged: (
 }
 
 function FileRow({ file: f, onChanged }: { file: GameFile; onChanged: () => void }) {
-  const toast = useToast();
-  const retry = useAction(() => retryFile(f.id));
-  const doRetry = async () => {
-    try {
-      await retry.run();
-      toast.success("File queued again");
-      onChanged();
-    } catch (e) {
-      toast.error(errorMessage(e));
-    }
-  };
+  const retry = useToastAction(() => retryFile(f.id), { success: "File queued again", onDone: onChanged });
   const downloading = f.status === "downloading";
   const isError = f.status === "error";
   const dl = f.progress?.downloaded_bytes ?? 0;
@@ -250,7 +211,7 @@ function FileRow({ file: f, onChanged }: { file: GameFile; onChanged: () => void
         {isError && (
           <span className="sub err-text">
             {f.error || "Download failed"}{" "}
-            <button className="link-btn" onClick={doRetry} disabled={retry.pending}>
+            <button className="link-btn" onClick={() => void retry.run()} disabled={retry.pending}>
               Retry
             </button>
           </span>
@@ -266,7 +227,9 @@ function FileRow({ file: f, onChanged }: { file: GameFile; onChanged: () => void
           <span className="faint">—</span>
         )}
       </td>
-      <td className="muted">{f.downloaded_at ? <TimeAgo iso={f.downloaded_at} /> : <span className="faint">—</span>}</td>
+      <td className="muted">
+        {f.downloaded_at ? <TimeAgo iso={f.downloaded_at} /> : <span className="faint">—</span>}
+      </td>
     </tr>
   );
 }

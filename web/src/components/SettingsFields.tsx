@@ -1,9 +1,80 @@
+import { useState, type ReactNode } from "react";
 import type { DownloadMode, LanguageOption, Platform, RemovedSummary } from "../api";
 import { formatBytes, PLATFORM_LABELS, plural } from "../format";
 import { Checkbox } from "./Common";
 import { Modal } from "./Modal";
 
 export const ALL_PLATFORMS: Platform[] = ["windows", "mac", "linux"];
+
+/**
+ * Number input with a unit. It keeps the text the user is typing, so the field
+ * can be cleared and retyped, and only reports values that are within bounds;
+ * leaving it puts the stored value back on screen.
+ */
+export function NumberField({
+  id,
+  label,
+  unit,
+  hint,
+  value,
+  onChange,
+  min,
+  max,
+  step = 1,
+  disabled,
+}: {
+  id: string;
+  label: string;
+  unit: string;
+  hint?: ReactNode;
+  value: number;
+  onChange: (v: number) => void;
+  min: number;
+  max?: number;
+  /** A step of 1 (the default) makes the field integer-only. */
+  step?: number;
+  disabled?: boolean;
+}) {
+  const [text, setText] = useState(String(value));
+  const [lastValue, setLastValue] = useState(value);
+  // Follow the value when it changes elsewhere (the form was reset or reloaded).
+  if (value !== lastValue) {
+    setLastValue(value);
+    setText(String(value));
+  }
+  const edit = (raw: string) => {
+    setText(raw);
+    const n = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(n)) return; // being cleared, not a value yet
+    const rounded = step === 1 ? Math.round(n) : n;
+    const bounded = Math.min(max ?? Infinity, Math.max(min, rounded));
+    // Remember what we report so the value coming back does not overwrite what
+    // is being typed: "12" in a 1-8 field stays until the field is left.
+    setLastValue(bounded);
+    onChange(bounded);
+  };
+  return (
+    <div className="field">
+      <label htmlFor={id}>{label}</label>
+      <div className="input-unit">
+        <input
+          id={id}
+          className="input num"
+          type="number"
+          min={min}
+          max={max}
+          step={step}
+          value={text}
+          onChange={(e) => edit(e.target.value)}
+          onBlur={() => setText(String(value))}
+          disabled={disabled}
+        />
+        <span className="unit">{unit}</span>
+      </div>
+      {hint && <span className="hint">{hint}</span>}
+    </div>
+  );
+}
 
 export const DOWNLOAD_MODE_LABELS: Record<Exclude<DownloadMode, "">, string> = {
   all: "Every game I own",
@@ -23,7 +94,10 @@ export function DownloadModePicker({
   name?: string;
 }) {
   const options: Array<{ value: Exclude<DownloadMode, "">; desc: string }> = [
-    { value: "all", desc: "Everything in your library is downloaded and kept up to date. Large libraries need a lot of disk space." },
+    {
+      value: "all",
+      desc: "Everything in your library is downloaded and kept up to date. Large libraries need a lot of disk space.",
+    },
     {
       value: "selected",
       desc: "Nothing is downloaded until you tick games in the library. New games you buy are listed but not downloaded.",

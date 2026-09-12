@@ -555,6 +555,8 @@ input[type="radio"] {
   place-items: center;
   padding: 16px;
 }
+/* The dialog itself takes focus when it opens; the box is visible enough. */
+.modal:focus { outline: none; }
 .modal {
   width: min(520px, 100%);
   background: var(--surface);
@@ -789,6 +791,10 @@ input[type="radio"] {
   min-width: 8px;
 }
 .wizard-step { display: flex; flex-direction: column; gap: 16px; }
+/* The wizard asks questions, so its field labels read as questions, not captions. */
+.wizard-step .field-label { color: var(--text); }
+/* Controls that need a little more air under their label than the field gap gives. */
+.field-body { margin-top: 4px; }
 .wizard-actions {
   display: flex;
   justify-content: flex-end;

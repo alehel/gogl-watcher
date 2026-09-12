@@ -304,12 +304,10 @@ func (s *Syncer) syncAll(ctx context.Context) error {
 		if ctx.Err() != nil {
 			break
 		}
-		wg.Add(1)
 		sem <- struct{}{}
-		go func(id int64, title string) {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-sem }()
-			err := s.syncGame(ctx, id, owned, settings, true)
+			err := s.syncGame(ctx, g.ID, owned, settings, true)
 			mu.Lock()
 			done++
 			if err != nil {
@@ -318,13 +316,13 @@ func (s *Syncer) syncAll(ctx context.Context) error {
 					firstEr = err
 				}
 				if ctx.Err() == nil {
-					s.log.Warn("could not sync game", "game", title, "error", err)
+					s.log.Warn("could not sync game", "game", g.Title, "error", err)
 				}
 			}
 			d := done
 			mu.Unlock()
 			s.setPhase("details", -1, d)
-		}(g.ID, g.Title)
+		})
 	}
 	wg.Wait()
 	if ctx.Err() != nil {

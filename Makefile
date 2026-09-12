@@ -1,6 +1,9 @@
 # Bare version (1.2.3, or 1.2.3-4-gabcdef between tags): the UI adds the "v".
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
 
+# Tracked Go files only: gofmt must not wander into web/node_modules.
+GO_FILES = $(shell git ls-files '*.go')
+
 .PHONY: all web build test run mock docker clean
 
 all: build
@@ -12,8 +15,10 @@ build: web
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/alehel/gogl-watcher/internal/config.Version=$(VERSION)" -o bin/gogl-watcher ./cmd/gogl-watcher
 
 test:
+	@test -z "$$(gofmt -l $(GO_FILES))" || { echo "not gofmt'd:"; gofmt -l $(GO_FILES); exit 1; }
+	go vet ./...
 	go test ./...
-	cd web && npx tsc --noEmit
+	cd web && npm run lint && npm run format:check && npx tsc --noEmit
 
 run:
 	DATA_DIR=./data LIBRARY_DIR=./library go run ./cmd/gogl-watcher

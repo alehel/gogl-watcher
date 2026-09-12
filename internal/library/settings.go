@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"sort"
 
 	"github.com/alehel/gogl-watcher/internal/db"
 )
@@ -12,6 +11,19 @@ import (
 // ReasonUnselected is the removal reason for files of a game that is not selected
 // while only selected games are downloaded.
 const ReasonUnselected = "unselected"
+
+// RemovalAction says what to do with files that are already downloaded when they
+// stop being wanted. Anything else (in particular the empty value the UI sends
+// before it has asked) means the question has not been answered yet.
+type RemovalAction string
+
+const (
+	RemovalKeep   RemovalAction = "keep"   // leave them on disk, stop tracking them
+	RemovalDelete RemovalAction = "delete" // delete them from disk
+)
+
+// Answered reports whether a is an answer to the confirmation question.
+func (a RemovalAction) Answered() bool { return a == RemovalKeep || a == RemovalDelete }
 
 // RemovalPreview describes tracked files a settings change would drop.
 type RemovalPreview struct {
@@ -115,7 +127,7 @@ func previewOf(list []unwanted) *RemovalPreview {
 	for r := range reasons {
 		p.Reasons = append(p.Reasons, r)
 	}
-	sort.Strings(p.Reasons)
+	slices.Sort(p.Reasons)
 	p.NeedsConfirmation = p.Removed.DownloadedFiles > 0
 	return p
 }
@@ -136,12 +148,20 @@ type ErrConfirmationRequired struct {
 
 func (e *ErrConfirmationRequired) Error() string { return "confirmation_required" }
 
-// dropFiles forgets the files in list. onRemoved must be "keep" or "delete" when
-// downloaded files are among them; files never downloaded are simply forgotten.
-func (s *Syncer) dropFiles(ctx context.Context, list []unwanted, onRemoved, why string) error {
-	preview := previewOf(list)
-	if preview.NeedsConfirmation && onRemoved != "keep" && onRemoved != "delete" {
-		return &ErrConfirmationRequired{Preview: preview}
+// confirmRemoval reports (as an error the caller passes on) that dropping list
+// would touch downloaded files while onRemoved says nothing about them.
+func confirmRemoval(list []unwanted, onRemoved RemovalAction) error {
+	if p := previewOf(list); p.NeedsConfirmation && !onRemoved.Answered() {
+		return &ErrConfirmationRequired{Preview: p}
+	}
+	return nil
+}
+
+// dropFiles forgets the files in list. onRemoved must be answered when downloaded
+// files are among them; files never downloaded are simply forgotten.
+func (s *Syncer) dropFiles(ctx context.Context, list []unwanted, onRemoved RemovalAction, why string) error {
+	if err := confirmRemoval(list, onRemoved); err != nil {
+		return err
 	}
 	for _, u := range list {
 		f := u.file
@@ -158,7 +178,7 @@ func (s *Syncer) dropFiles(ctx context.Context, list []unwanted, onRemoved, why 
 			if err := s.db.DeleteFile(ctx, f.ID); err != nil {
 				return err
 			}
-		case onRemoved == "delete":
+		case onRemoved == RemovalDelete:
 			if err := s.paths.Remove(onDisk); err != nil {
 				return fmt.Errorf("deleting %s: %w", onDisk, err)
 			}
@@ -178,20 +198,20 @@ func (s *Syncer) dropFiles(ctx context.Context, list []unwanted, onRemoved, why 
 	return nil
 }
 
-// ApplySettings stores ns. onRemoved must be "keep" or "delete" when downloaded
-// files stop being wanted; files never downloaded are simply forgotten. A sync
+// ApplySettings stores ns. onRemoved must be answered when downloaded files stop
+// being wanted; files never downloaded are simply forgotten. A sync
 // that is running with the old settings is stopped first, since it would plan
 // (and re-add) files the new settings drop, and the next sync cannot start until
 // the new settings are stored; the caller triggers that fresh sync.
-func (s *Syncer) ApplySettings(ctx context.Context, ns db.Settings, onRemoved string) error {
+func (s *Syncer) ApplySettings(ctx context.Context, ns db.Settings, onRemoved RemovalAction) error {
 	// Ask before touching anything: a change that is refused for lack of an
 	// answer must not disturb a running sync.
 	list, err := s.findUnwanted(ctx, ns)
 	if err != nil {
 		return err
 	}
-	if p := previewOf(list); p.NeedsConfirmation && onRemoved != "keep" && onRemoved != "delete" {
-		return &ErrConfirmationRequired{Preview: p}
+	if err := confirmRemoval(list, onRemoved); err != nil {
+		return err
 	}
 	old, err := s.db.GetSettings(ctx)
 	if err != nil {
@@ -217,10 +237,10 @@ func (s *Syncer) ApplySettings(ctx context.Context, ns db.Settings, onRemoved st
 }
 
 // SetSelection marks games as selected for download or not. Deselecting a game
-// drops its tracked files like a settings change does: onRemoved must be "keep" or
-// "delete" when downloaded files are affected. Selecting never touches files; the
-// caller syncs the games afterwards so their files get planned.
-func (s *Syncer) SetSelection(ctx context.Context, ids []int64, selected bool, onRemoved string) error {
+// drops its tracked files like a settings change does: onRemoved must be answered
+// when downloaded files are affected. Selecting never touches files; the caller
+// syncs the games afterwards so their files get planned.
+func (s *Syncer) SetSelection(ctx context.Context, ids []int64, selected bool, onRemoved RemovalAction) error {
 	// Hold the games' locks (in a fixed order) so a sync of one of them cannot plan
 	// files between the drop below and the flag change.
 	sorted := slices.Clone(ids)

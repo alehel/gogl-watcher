@@ -22,12 +22,12 @@ type Entry struct {
 
 // Store persists log entries.
 type Store struct {
-	db       *sql.DB
-	ch       chan Entry
-	maxRows  int
-	wg       sync.WaitGroup
-	closeCh  chan struct{}
-	closeMux sync.Once
+	db        *sql.DB
+	ch        chan Entry
+	maxRows   int
+	wg        sync.WaitGroup
+	closeCh   chan struct{}
+	closeOnce sync.Once
 }
 
 // NewStore starts a background writer. maxRows bounds the table size.
@@ -46,8 +46,7 @@ func (s *Store) loop() {
 	for {
 		select {
 		case e := <-s.ch:
-			_, _ = s.db.Exec(`INSERT INTO logs(ts, level, component, message) VALUES(?,?,?,?)`,
-				e.Time.UnixMilli(), e.Level, e.Component, e.Message)
+			s.insert(e)
 			n++
 			if n >= 500 {
 				n = 0
@@ -59,8 +58,7 @@ func (s *Store) loop() {
 			for {
 				select {
 				case e := <-s.ch:
-					_, _ = s.db.Exec(`INSERT INTO logs(ts, level, component, message) VALUES(?,?,?,?)`,
-						e.Time.UnixMilli(), e.Level, e.Component, e.Message)
+					s.insert(e)
 				default:
 					s.pruneNow()
 					return
@@ -70,13 +68,18 @@ func (s *Store) loop() {
 	}
 }
 
+func (s *Store) insert(e Entry) {
+	_, _ = s.db.Exec(`INSERT INTO logs(ts, level, component, message) VALUES(?,?,?,?)`,
+		e.Time.UnixMilli(), e.Level, e.Component, e.Message)
+}
+
 func (s *Store) pruneNow() {
 	_, _ = s.db.Exec(`DELETE FROM logs WHERE id <= (SELECT id FROM logs ORDER BY id DESC LIMIT 1 OFFSET ?)`, s.maxRows)
 }
 
 // Close flushes pending entries.
 func (s *Store) Close() {
-	s.closeMux.Do(func() { close(s.closeCh) })
+	s.closeOnce.Do(func() { close(s.closeCh) })
 	s.wg.Wait()
 }
 

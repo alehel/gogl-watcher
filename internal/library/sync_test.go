@@ -139,7 +139,7 @@ func TestApplySettingsDuringSyncDoesNotResurrectDroppedFiles(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool { return syncer.Status().Phase == "details" })
 	ns := old
 	ns.Platforms = []string{"windows"}
-	if err := syncer.ApplySettings(ctx, ns, "keep"); err != nil {
+	if err := syncer.ApplySettings(ctx, ns, RemovalKeep); err != nil {
 		t.Fatal(err)
 	}
 	close(api.gate)
@@ -245,8 +245,8 @@ func TestRefusedSettingsChangeLeavesRunningSyncAlone(t *testing.T) {
 // like any downloaded file: ask, keep it on "keep", remove it on "delete", and
 // never delete it silently.
 func TestDroppingPendingUpdateKeepsPreviousVersion(t *testing.T) {
-	for _, answer := range []string{"keep", "delete"} {
-		t.Run(answer, func(t *testing.T) {
+	for _, answer := range []RemovalAction{RemovalKeep, RemovalDelete} {
+		t.Run(string(answer), func(t *testing.T) {
 			m, _ := gog.NewMock(context.Background(), nil)
 			_, _ = m.ExchangeCode(context.Background(), "code")
 			d, syncer, paths := newSyncTest(t, m)
@@ -295,7 +295,7 @@ func TestDroppingPendingUpdateKeepsPreviousVersion(t *testing.T) {
 			_, statErr := os.Stat(abs)
 			got, _ = d.GetFile(ctx, res.ID)
 			switch answer {
-			case "keep":
+			case RemovalKeep:
 				if statErr != nil {
 					t.Errorf("keep must leave the previous version on disk: %v", statErr)
 				}
