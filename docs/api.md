@@ -38,6 +38,13 @@ with an appropriate 4xx/5xx status. Timestamps are RFC 3339 strings or `null`.
     "download_mode": "all",         // "all" | "selected" (see settings)
     "bytes_total": 0, "bytes_done": 0
   },
+  "catalog": {                      // coverage of the size catalog (see /api/settings/estimate)
+    "games_scanned": 0,             // owned games whose sizes are known
+    "games_total": 0,
+    "scanning": false,              // a game is being measured right now
+    "last_error": null,
+    "next_scan_at": null
+  },
   "disk": { "library_dir": "/library", "free_bytes": 0, "total_bytes": 0 }
 }
 ```
@@ -110,6 +117,25 @@ wanted if these settings were applied:
 
 `unselected` appears when switching to `download_mode: "selected"` would drop files of games
 that are not selected.
+
+### `GET /api/settings/estimate` / `POST /api/settings/estimate`
+What a backup of the **whole library** would need. `GET` answers for the settings in force;
+`POST` (body: a full settings object, which is not stored) answers for a combination the user
+is only considering, which is the question the tracked files cannot answer — they only exist
+for what the current settings already wanted.
+
+```json
+{ "bytes": 4402341478, "files": 1234, "games_scanned": 412, "games_total": 530 }
+```
+
+Selection is deliberately ignored: the number covers every owned game, so it does not move
+when games are ticked in the library. It counts only the `games_scanned` games whose sizes are
+known (see the catalog block of `GET /api/status`) and uses GOG's manifest sizes, which are
+within a fraction of a percent of the bytes that actually arrive — show it as approximate.
+
+Sizes are collected from the game details each sync fetches anyway. Games a sync never looks at
+(not selected, in the `selected` download mode) are measured by a background scan of one game
+every 15 seconds, which stands down while a sync runs and refreshes an entry after 30 days.
 
 ### `PUT /api/settings`
 Body `{ "settings": {...}, "on_removed": "keep" | "delete" | null }`.

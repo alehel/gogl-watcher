@@ -91,6 +91,7 @@ func run() error {
 	syncer.OnChange = dl.Wake
 	syncer.OnDrop = dl.Cancel
 	sched := scheduler.New(database, api, syncer, log, time.Duration(cfg.StartupSyncDelaySeconds)*time.Second)
+	scanner := library.NewScanner(database, api, syncer, log)
 
 	settings, err := database.GetSettings(ctx)
 	if err != nil {
@@ -105,12 +106,13 @@ func run() error {
 	}
 
 	var workers sync.WaitGroup
-	workers.Add(2)
+	workers.Add(3)
 	go func() { defer workers.Done(); dl.Run(ctx) }()
 	go func() { defer workers.Done(); sched.Run(ctx) }()
+	go func() { defer workers.Done(); scanner.Run(ctx) }()
 
 	srv := &server.Server{
-		DB: database, GOG: api, Syncer: syncer, Downloads: dl, Scheduler: sched, Logs: logs, Paths: paths,
+		DB: database, GOG: api, Syncer: syncer, Downloads: dl, Scheduler: sched, Scanner: scanner, Logs: logs, Paths: paths,
 		UI: web.Dist(), Version: config.Version, Log: log.With("component", "http"), LibraryDir: cfg.LibraryDir,
 	}
 	httpServer := &http.Server{Addr: cfg.Listen, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}

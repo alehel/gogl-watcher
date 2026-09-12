@@ -65,6 +65,15 @@ export interface DiskState {
   total_bytes: number;
 }
 
+/** How much of the library the size catalog covers, and what the scan is doing. */
+export interface CatalogState {
+  games_scanned: number;
+  games_total: number;
+  scanning: boolean;
+  last_error: string | null;
+  next_scan_at: string | null;
+}
+
 export interface Status {
   version: string;
   setup_complete: boolean;
@@ -75,6 +84,7 @@ export interface Status {
   sync: SyncState;
   downloads: DownloadsState;
   library: LibraryTotals;
+  catalog: CatalogState;
   disk: DiskState;
 }
 
@@ -115,6 +125,19 @@ export interface SettingsPreview {
 export interface LanguageOption {
   code: string;
   name: string;
+}
+
+/**
+ * What a backup of the whole library would need under a combination of
+ * settings, whichever games are selected for download. Sizes come from GOG's
+ * manifests, so they are close to but not exactly the bytes that arrive, and
+ * they only cover the games scanned so far.
+ */
+export interface SettingsEstimate {
+  files: number;
+  bytes: number;
+  games_scanned: number;
+  games_total: number;
 }
 
 export interface WorksOn {
@@ -311,6 +334,11 @@ export const completeSetup = () => request<{ ok: true }>("POST", "/api/setup/com
 export const getSettings = () => request<Settings>("GET", "/api/settings");
 export const previewSettings = (settings: Settings) =>
   request<SettingsPreview>("POST", "/api/settings/preview", settings);
+/** Estimates for the settings in force. */
+export const getEstimate = () => request<SettingsEstimate>("GET", "/api/settings/estimate");
+/** Estimates for settings that have not been applied, without storing anything. */
+export const estimateSettings = (settings: Settings) =>
+  request<SettingsEstimate>("POST", "/api/settings/estimate", settings);
 export const putSettings = (settings: Settings, onRemoved: OnRemoved = null) =>
   request<Settings>("PUT", "/api/settings", { settings, on_removed: onRemoved });
 export const getLanguages = () =>

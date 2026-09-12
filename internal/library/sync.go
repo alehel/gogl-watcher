@@ -571,6 +571,12 @@ func (s *Syncer) syncGame(ctx context.Context, id int64, owned gog.OwnedSet, set
 		_ = s.db.SetGameDetailsSynced(ctx, id, err.Error())
 		return err
 	}
+	// The details just fetched describe every platform, language, DLC and extra
+	// GOG offers, not only what the settings want. Keeping that in the catalog
+	// costs nothing here and is what size estimates for other combinations read.
+	if err := s.db.ReplaceCatalog(ctx, id, CatalogOf(*game, p, owned)); err != nil && ctx.Err() == nil {
+		s.log.Warn("could not record sizes", "game", game.Title, "error", err)
+	}
 	suspect := s.checkBuilds(ctx, *game, settings)
 	planned := Plan(*game, p, owned, settings)
 	verify := s.verifier(*game, suspect, rolling)

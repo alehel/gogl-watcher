@@ -28,6 +28,11 @@ limit bandwidth and concurrency.
   settings.
 - **Safe settings changes** – removing a platform (or DLC/extras), deselecting a game or switching
   to "selected games only" asks whether to keep or delete the files already on disk.
+- **Know what it will cost** – the dashboard shows how much is still to fetch against the free
+  space on disk, and the settings page prices a full backup of your whole library for the
+  combination of platforms, languages, DLC and extras you are considering, before you apply it.
+  Sizes for games no sync looks at are collected by a slow background scan (one game every 15
+  seconds), so the figure fills in over the first day and says what it is based on meanwhile.
 - **Single static binary** – Go backend with the React UI embedded, SQLite for state, no cron
   daemon or external services.
 

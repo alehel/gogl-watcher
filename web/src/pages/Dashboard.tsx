@@ -2,15 +2,18 @@ import { Link } from "react-router-dom";
 import {
   errorMessage,
   getDownloads,
+  getEstimate,
   NetworkError,
   pauseDownloads,
   resumeDownloads,
   startSync,
   type ActiveDownload,
+  type SettingsEstimate,
   type Status,
 } from "../api";
 import { ApiErrorNotice, EmptyState, Loading, Spinner, TimeAgo } from "../components/Common";
 import { DataTable } from "../components/DataTable";
+import { EstimateNote } from "../components/Estimate";
 import { ProgressBar } from "../components/ProgressBar";
 import { StatusDot } from "../components/StatusDot";
 import { useStatus } from "../components/StatusContext";
@@ -21,6 +24,9 @@ import { useAction, useNow, usePolling } from "../hooks";
 export function DashboardPage() {
   const { status, error, loading, refresh } = useStatus();
   const downloads = usePolling(getDownloads, 2000);
+  // The whole-library estimate reads the size catalog, which only moves as the
+  // scan or a sync progresses, so it is polled far more slowly than the rest.
+  const estimate = usePolling(getEstimate, 60000);
   const now = useNow();
 
   if (loading && !status) return <Loading text="Loading status…" />;
@@ -31,6 +37,8 @@ export function DashboardPage() {
   const bytesFrac = ratio(l.bytes_done, l.bytes_total);
   const diskFrac = ratio(status.disk.free_bytes, status.disk.total_bytes);
   const diskLow = status.disk.total_bytes > 0 && diskFrac < 0.05;
+  const remaining = Math.max(0, l.bytes_total - l.bytes_done);
+  const wontFit = remaining > status.disk.free_bytes && status.disk.free_bytes > 0;
 
   const selectedOnly = l.download_mode === "selected";
   const wanted = selectedOnly ? l.games - l.unselected : l.games;
@@ -64,9 +72,16 @@ export function DashboardPage() {
           <Item label="Errors" value={l.error} danger={l.error > 0} />
           <Item label="Unavailable" value={l.unavailable} />
           <Item label="Library size" value={`${formatBytes(l.bytes_done)} of ${formatBytes(l.bytes_total)}`} />
+          <Item label="Still to fetch" value={formatBytes(remaining)} danger={wontFit} />
           <Item label="Disk free" value={formatBytes(status.disk.free_bytes)} danger={diskLow} />
         </div>
         <ProgressBar line value={bytesFrac} label="Library bytes downloaded" />
+        {wontFit && (
+          <p className="summary err-text">
+            {formatBytes(remaining)} still to fetch, but only {formatBytes(status.disk.free_bytes)} free on disk.
+          </p>
+        )}
+        <FullBackupNote status={status} estimate={estimate.data} />
       </div>
 
       <div className="two-col">
@@ -108,6 +123,27 @@ export function DashboardPage() {
         <SyncSection status={status} onChanged={refresh} />
       </div>
     </div>
+  );
+}
+
+/**
+ * What the whole library would cost under the settings in force. Only worth
+ * saying while downloading a selection: the figures above already cover the
+ * whole library in the "all" mode, and would just be repeated here.
+ */
+function FullBackupNote({ status, estimate }: { status: Status; estimate: SettingsEstimate | null }) {
+  if (!estimate || !status.setup_complete || status.library.download_mode !== "selected") return null;
+  const free = status.disk.free_bytes;
+  return (
+    <>
+      <EstimateNote estimate={estimate} />
+      {estimate.bytes > free && free > 0 && estimate.games_scanned > 0 && (
+        <p className="summary faint">
+          That is more than the {formatBytes(free)} free on disk. <Link to="/settings">Settings</Link> costs
+          other combinations of platforms, languages and extras.
+        </p>
+      )}
+    </>
   );
 }
 

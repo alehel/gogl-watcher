@@ -204,6 +204,63 @@ func TestSetupFlowAndSettings(t *testing.T) {
 	}
 }
 
+// The estimate answers what a whole-library backup would need under settings
+// the user is only considering, which is the question the stored file rows
+// cannot answer on their own.
+func TestEstimateCostsSettingsThatWereNeverApplied(t *testing.T) {
+	srv, _ := newTestServer(t)
+	if code, _ := call(t, srv, "POST", "/api/auth/code", map[string]string{"code": "abc"}); code != 200 {
+		t.Fatal("auth failed")
+	}
+	_, settings := call(t, srv, "GET", "/api/settings", nil)
+	settings["download_mode"] = "all"
+	settings["platforms"] = []string{"windows"}
+	settings["content_chosen"] = true
+	if code, out := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings}); code != 200 {
+		t.Fatalf("save settings: %d %v", code, out)
+	}
+	if code, out := call(t, srv, "POST", "/api/setup/complete", nil); code != 200 {
+		t.Fatalf("complete: %d %v", code, out)
+	}
+	games := waitGames(t, srv, 10)
+	waitSyncIdle(t, srv)
+
+	code, out := call(t, srv, "POST", "/api/settings/estimate", settings)
+	if code != 200 {
+		t.Fatalf("estimate: %d %v", code, out)
+	}
+	base := out["bytes"].(float64)
+	if base == 0 || out["files"].(float64) == 0 {
+		t.Fatalf("estimate for the applied settings is empty: %v", out)
+	}
+	if out["games_scanned"].(float64) != float64(len(games)) || out["games_total"].(float64) != float64(len(games)) {
+		t.Errorf("the sync should have catalogued every game: %v", out)
+	}
+	// The status reports the same coverage, so the UI can qualify the number.
+	_, st := call(t, srv, "GET", "/api/status", nil)
+	cat := st["catalog"].(map[string]any)
+	if cat["games_scanned"].(float64) != float64(len(games)) || cat["games_total"].(float64) != float64(len(games)) {
+		t.Errorf("status catalog: %v", cat)
+	}
+
+	settings["platforms"] = []string{"windows", "mac", "linux"}
+	settings["include_extras"] = true
+	_, out = call(t, srv, "POST", "/api/settings/estimate", settings)
+	if more := out["bytes"].(float64); more <= base {
+		t.Errorf("more platforms and extras should cost more: %v vs %v", more, base)
+	}
+	// Nothing of this was stored: the applied settings are still Windows-only.
+	_, now := call(t, srv, "GET", "/api/settings", nil)
+	if plats := now["platforms"].([]any); len(plats) != 1 || plats[0] != "windows" {
+		t.Errorf("estimating must not change the stored settings: %v", plats)
+	}
+
+	settings["max_concurrent_downloads"] = 99
+	if code, _ := call(t, srv, "POST", "/api/settings/estimate", settings); code != 400 {
+		t.Errorf("invalid settings should be refused, got %d", code)
+	}
+}
+
 // waitGames polls until at least n games are listed.
 func waitGames(t *testing.T, srv *httptest.Server, n int) []any {
 	t.Helper()

@@ -32,6 +32,7 @@ type Server struct {
 	Syncer     *library.Syncer
 	Downloads  *downloader.Manager
 	Scheduler  *scheduler.Scheduler
+	Scanner    *library.Scanner
 	Logs       *logstore.Store
 	Paths      library.Paths
 	UI         fs.FS
@@ -52,6 +53,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/settings", s.handleSettingsGet)
 	mux.HandleFunc("PUT /api/settings", s.handleSettingsPut)
 	mux.HandleFunc("POST /api/settings/preview", s.handleSettingsPreview)
+	mux.HandleFunc("GET /api/settings/estimate", s.handleSettingsEstimateStored)
+	mux.HandleFunc("POST /api/settings/estimate", s.handleSettingsEstimate)
 	mux.HandleFunc("GET /api/settings/languages", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"languages": Languages})
 	})
@@ -280,8 +283,20 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"paused": s.Downloads.Paused(), "active": len(active), "queued": queued, "speed_bps": speed,
 		},
 		"library": lib,
+		"catalog": s.catalogStatus(ctx),
 		"disk":    map[string]any{"library_dir": s.LibraryDir, "free_bytes": free, "total_bytes": total},
 	})
+}
+
+// catalogStatus reports how much of the library the size catalog covers. A
+// server without a scanner (tests) still reports coverage, only never a scan.
+func (s *Server) catalogStatus(ctx context.Context) library.ScanStatus {
+	if s.Scanner != nil {
+		return s.Scanner.Status(ctx)
+	}
+	var st library.ScanStatus
+	st.GamesScanned, st.GamesTotal, _ = s.DB.CatalogCoverage(ctx)
+	return st
 }
 
 func diskUsage(dir string) (free, total int64) {
@@ -406,6 +421,51 @@ func (s *Server) handleSettingsPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, p)
+}
+
+// handleSettingsEstimateStored answers for the settings in force.
+func (s *Server) handleSettingsEstimateStored(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.DB.GetSettings(r.Context())
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	s.writeEstimate(w, r, settings)
+}
+
+// handleSettingsEstimate answers for settings the user is only considering.
+func (s *Server) handleSettingsEstimate(w http.ResponseWriter, r *http.Request) {
+	var ns db.Settings
+	if err := readJSON(w, r, &ns); err != nil {
+		writeError(w, 400, "invalid settings: "+err.Error())
+		return
+	}
+	if err := ns.Normalize(); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	s.writeEstimate(w, r, ns)
+}
+
+// writeEstimate answers what a backup of the whole library would need under
+// these settings, selection aside: every owned game the catalog covers counts,
+// so the number does not move when games are ticked or unticked.
+func (s *Server) writeEstimate(w http.ResponseWriter, r *http.Request, ns db.Settings) {
+	ctx := r.Context()
+	items, err := s.DB.ListCatalog(ctx)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	scanned, total, err := s.DB.CatalogCoverage(ctx)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	files, bytes := library.Estimate(items, ns)
+	writeJSON(w, 200, map[string]any{
+		"files": files, "bytes": bytes, "games_scanned": scanned, "games_total": total,
+	})
 }
 
 func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {

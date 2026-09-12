@@ -116,6 +116,19 @@ CREATE TABLE IF NOT EXISTS game_builds (
   checked_at INTEGER NOT NULL,
   PRIMARY KEY (game_id, os)
 );
+CREATE TABLE IF NOT EXISTS catalog_items (
+  game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  product_id INTEGER NOT NULL,
+  is_dlc INTEGER NOT NULL DEFAULT 0,
+  kind TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  os TEXT NOT NULL DEFAULT '',
+  language TEXT NOT NULL DEFAULT '',
+  seq INTEGER NOT NULL DEFAULT 0,
+  files INTEGER NOT NULL DEFAULT 0,
+  bytes INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (game_id, product_id, kind, item_id)
+);
 CREATE TABLE IF NOT EXISTS logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,
@@ -136,6 +149,9 @@ func (d *DB) migrate() error {
 		return err
 	}
 	if err := d.addColumn("files", "verified_at", "INTEGER"); err != nil {
+		return err
+	}
+	if err := d.addColumn("games", "catalog_synced_at", "INTEGER"); err != nil {
 		return err
 	}
 	return d.migrateDownloadMode()
@@ -692,6 +708,103 @@ func (d *DB) GameStatsAll(ctx context.Context) (map[int64]GameStats, error) {
 		out[id] = s
 	}
 	return out, rows.Err()
+}
+
+// ---- catalog ----
+
+// CatalogItem is one installer or bonus item GOG offers for a product, reduced
+// to what a size estimate needs. It exists for everything GOG offers, not only
+// for what the current settings want, so that the cost of a different
+// combination of platforms, languages, DLC and extras can be answered without
+// asking GOG again.
+//
+// One row per item rather than per file: the planner keeps or drops a whole
+// installer at a time, so per-file rows would multiply the table without making
+// any estimate more exact.
+type CatalogItem struct {
+	GameID    int64
+	ProductID int64
+	IsDLC     bool
+	Kind      string // "installer" | "extra"
+	ItemID    string // GOG's id for the installer or bonus item
+	OS        string
+	Language  string
+	Seq       int   // position in GOG's list, so a fallback picks the same item twice
+	Files     int   // files the item consists of
+	Bytes     int64 // their total size as GOG's manifest reports it
+}
+
+// ReplaceCatalog stores the catalog of one game, replacing whatever was there,
+// and stamps the game as scanned.
+func (d *DB) ReplaceCatalog(ctx context.Context, gameID int64, items []CatalogItem) error {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM catalog_items WHERE game_id = ?`, gameID); err != nil {
+		return err
+	}
+	for _, it := range items {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO catalog_items(game_id, product_id, is_dlc, kind, item_id, os, language, seq, files, bytes)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(game_id, product_id, kind, item_id) DO UPDATE SET
+				is_dlc = excluded.is_dlc, os = excluded.os, language = excluded.language,
+				seq = excluded.seq, files = excluded.files, bytes = excluded.bytes`,
+			gameID, it.ProductID, it.IsDLC, it.Kind, it.ItemID, it.OS, it.Language, it.Seq, it.Files, it.Bytes); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE games SET catalog_synced_at = ? WHERE id = ?`, time.Now().UnixMilli(), gameID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ListCatalog returns the catalog of every owned game.
+func (d *DB) ListCatalog(ctx context.Context) ([]CatalogItem, error) {
+	rows, err := d.QueryContext(ctx, `SELECT c.game_id, c.product_id, c.is_dlc, c.kind, c.item_id, c.os, c.language, c.seq, c.files, c.bytes
+		FROM catalog_items c JOIN games g ON g.id = c.game_id WHERE g.owned = 1 ORDER BY c.game_id, c.product_id, c.kind, c.seq`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CatalogItem
+	for rows.Next() {
+		var it CatalogItem
+		if err := rows.Scan(&it.GameID, &it.ProductID, &it.IsDLC, &it.Kind, &it.ItemID, &it.OS, &it.Language, &it.Seq, &it.Files, &it.Bytes); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// CatalogCoverage reports how many owned games have been scanned into the
+// catalog, so an estimate can say what it is based on.
+func (d *DB) CatalogCoverage(ctx context.Context) (scanned, total int, err error) {
+	row := d.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(catalog_synced_at IS NOT NULL), 0) FROM games WHERE owned = 1`)
+	err = row.Scan(&total, &scanned)
+	return scanned, total, err
+}
+
+// NextCatalogScan returns the owned game whose catalog is missing or older than
+// staleBefore and has been waiting longest, or nil when every game is current.
+func (d *DB) NextCatalogScan(ctx context.Context, staleBefore time.Time) (*Game, error) {
+	rows, err := d.QueryContext(ctx, gameSelect+` WHERE owned = 1 AND (catalog_synced_at IS NULL OR catalog_synced_at < ?)
+		ORDER BY catalog_synced_at IS NOT NULL, catalog_synced_at, id LIMIT 1`, staleBefore.UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, rows.Err()
+	}
+	g, err := scanGame(rows)
+	if err != nil {
+		return nil, err
+	}
+	return &g, nil
 }
 
 // ---- products ----

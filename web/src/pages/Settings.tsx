@@ -13,6 +13,7 @@ import {
   type SettingsPreview,
 } from "../api";
 import { ApiErrorNotice, Checkbox, Loading, Spinner } from "../components/Common";
+import { EstimateNote, useEstimatePair } from "../components/Estimate";
 import {
   DownloadModePicker,
   LanguageFallbackSwitch,
@@ -22,7 +23,7 @@ import {
 } from "../components/SettingsFields";
 import { useStatus } from "../components/StatusContext";
 import { useToast } from "../components/Toast";
-import { kbpsToMbps, mbpsToKbps } from "../format";
+import { formatBytes, kbpsToMbps, mbpsToKbps } from "../format";
 import { useAsync } from "../hooks";
 
 function clampInt(v: string, min: number, max: number, fallback: number): number {
@@ -236,6 +237,7 @@ function SettingsForm({
             />
           </div>
         </section>
+        <StorageSection form={form} initial={initial} />
         <section className="form-section">
           <h2>Downloads</h2>
           <div className="form-row">
@@ -335,6 +337,43 @@ function SettingsForm({
         />
       )}
     </>
+  );
+}
+
+/**
+ * What the choices above would cost. The saved settings are costed alongside
+ * the edited ones, so the page can answer the question that actually gets
+ * asked: not "how big is my library" but "how much would this change add".
+ */
+function StorageSection({ form, initial }: { form: Settings; initial: Settings }) {
+  const { status } = useStatus();
+  const { data, loading } = useEstimatePair(form, initial);
+  const free = status?.disk.free_bytes ?? 0;
+  const estimate = data?.edited ?? null;
+  const delta = data ? data.edited.bytes - data.saved.bytes : 0;
+
+  return (
+    <section className="form-section">
+      <h2>Storage</h2>
+      {loading && !estimate ? (
+        <Loading text="Measuring…" />
+      ) : (
+        <EstimateNote estimate={estimate} className="hint" />
+      )}
+      <span className="hint">
+        {delta !== 0 && (
+          <>
+            <strong>
+              {delta > 0 ? "+" : "−"}
+              {formatBytes(Math.abs(delta))}
+            </strong>{" "}
+            against your saved settings ·{" "}
+          </>
+        )}
+        {formatBytes(free)} free on disk
+        {estimate && estimate.bytes > free && free > 0 ? " — a full backup would not fit" : ""}
+      </span>
+    </section>
   );
 }
 
