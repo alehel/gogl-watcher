@@ -94,7 +94,10 @@ export function DownloadModePicker({
   name?: string;
 }) {
   const options: Array<{ value: Exclude<DownloadMode, "">; desc: string }> = [
-    { value: "all", desc: "Everything in your library is downloaded and kept up to date. Large libraries need a lot of disk space." },
+    {
+      value: "all",
+      desc: "Everything in your library is downloaded and kept up to date. Large libraries need a lot of disk space.",
+    },
     {
       value: "selected",
       desc: "Nothing is downloaded until you tick games in the library. New games you buy are listed but not downloaded.",

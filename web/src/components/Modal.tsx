@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { IconClose } from "./Icons";
 
 interface Props {
@@ -9,6 +9,8 @@ interface Props {
 }
 
 export function Modal({ title, onClose, children, footer }: Props) {
+  const dialog = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -22,6 +24,14 @@ export function Modal({ title, onClose, children, footer }: Props) {
     };
   }, [onClose]);
 
+  // Move the keyboard into the dialog, and back where it was when it closes, so
+  // its buttons are the next thing Tab reaches.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    dialog.current?.focus();
+    return () => opener?.focus?.();
+  }, []);
+
   return (
     <div
       className="modal-backdrop"
@@ -29,7 +39,7 @@ export function Modal({ title, onClose, children, footer }: Props) {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="modal" role="dialog" aria-modal="true" aria-label={title}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label={title} ref={dialog} tabIndex={-1}>
         <div className="modal-head">
           <h2>{title}</h2>
           <button className="btn icon" onClick={onClose} aria-label="Close">

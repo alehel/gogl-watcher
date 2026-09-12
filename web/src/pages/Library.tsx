@@ -282,7 +282,9 @@ function GamesTable({
             <td>
               <GameStatusDot status={g.status} />
             </td>
-            <td>{inProgress(g) ? <ProgressBar value={g.progress} showPercent tone={gameStatusTone(g.status)} /> : null}</td>
+            <td>
+              {inProgress(g) ? <ProgressBar value={g.progress} showPercent tone={gameStatusTone(g.status)} /> : null}
+            </td>
             <td className="muted">
               <TimeAgo iso={g.last_synced_at} />
             </td>

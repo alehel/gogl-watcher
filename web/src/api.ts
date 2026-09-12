@@ -299,8 +299,7 @@ export const getStatus = () => request<Status>("GET", "/api/status");
 
 // ---- Authentication ----
 export const getAuthUrl = () => request<{ url: string }>("GET", "/api/auth/url");
-export const postAuthCode = (code: string) =>
-  request<{ user: User }>("POST", "/api/auth/code", { code });
+export const postAuthCode = (code: string) => request<{ user: User }>("POST", "/api/auth/code", { code });
 export const getAuth = () => request<AuthInfo>("GET", "/api/auth");
 export const logout = () => request<void>("POST", "/api/auth/logout");
 
@@ -313,8 +312,7 @@ export const previewSettings = (settings: Settings) =>
   request<SettingsPreview>("POST", "/api/settings/preview", settings);
 export const putSettings = (settings: Settings, onRemoved: OnRemoved = null) =>
   request<Settings>("PUT", "/api/settings", { settings, on_removed: onRemoved });
-export const getLanguages = () =>
-  request<{ languages: LanguageOption[] }>("GET", "/api/settings/languages");
+export const getLanguages = () => request<{ languages: LanguageOption[] }>("GET", "/api/settings/languages");
 
 // ---- Library ----
 export interface GamesQuery {
@@ -324,15 +322,11 @@ export interface GamesQuery {
   /** Lists games with files on disk before the rest; `sort` orders each group. */
   downloaded_first?: boolean;
 }
-export const getGames = (query: GamesQuery = {}) =>
-  request<{ games: GameSummary[] }>("GET", `/api/games${qs(query)}`);
+export const getGames = (query: GamesQuery = {}) => request<{ games: GameSummary[] }>("GET", `/api/games${qs(query)}`);
 export const getGame = (id: number | string) => request<GameDetail>("GET", `/api/games/${id}`);
-export const syncGame = (id: number | string) =>
-  request<{ ok: true }>("POST", `/api/games/${id}/sync`);
-export const retryGame = (id: number | string) =>
-  request<{ ok: true }>("POST", `/api/games/${id}/retry`);
-export const retryFile = (id: number | string) =>
-  request<{ ok: true }>("POST", `/api/files/${id}/retry`);
+export const syncGame = (id: number | string) => request<{ ok: true }>("POST", `/api/games/${id}/sync`);
+export const retryGame = (id: number | string) => request<{ ok: true }>("POST", `/api/games/${id}/retry`);
+export const retryFile = (id: number | string) => request<{ ok: true }>("POST", `/api/files/${id}/retry`);
 /** Selects or deselects games for download. Deselecting downloaded games needs `onRemoved` (409 otherwise). */
 export const setGameSelection = (ids: number[], selected: boolean, onRemoved: OnRemoved = null) =>
   request<{ ok: true; selected: boolean; ids: number[] }>("PUT", "/api/games/selection", {

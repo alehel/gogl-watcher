@@ -25,7 +25,9 @@ export function usePolling<T>(
   const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
   const fnRef = useRef(fn);
-  fnRef.current = fn;
+  useEffect(() => {
+    fnRef.current = fn;
+  });
 
   useEffect(() => {
     if (!enabled) return;

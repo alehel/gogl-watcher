@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { errorMessage } from "../api";
 import { useAction } from "../hooks";
 import { IconClose } from "./Icons";
@@ -90,7 +90,9 @@ export function useToastAction<A extends unknown[], R>(
   const { run, pending, error } = useAction(action);
   // Kept in a ref so the returned callback is stable across renders.
   const optionsRef = useRef(options);
-  optionsRef.current = options;
+  useEffect(() => {
+    optionsRef.current = options;
+  });
 
   const perform = useCallback(
     async (...args: A) => {

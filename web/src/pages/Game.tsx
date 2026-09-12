@@ -227,7 +227,9 @@ function FileRow({ file: f, onChanged }: { file: GameFile; onChanged: () => void
           <span className="faint">—</span>
         )}
       </td>
-      <td className="muted">{f.downloaded_at ? <TimeAgo iso={f.downloaded_at} /> : <span className="faint">—</span>}</td>
+      <td className="muted">
+        {f.downloaded_at ? <TimeAgo iso={f.downloaded_at} /> : <span className="faint">—</span>}
+      </td>
     </tr>
   );
 }

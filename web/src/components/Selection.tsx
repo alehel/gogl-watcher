@@ -1,5 +1,12 @@
 import { useCallback, useState } from "react";
-import { errorMessage, getLanguages, previewFromError, setGameSelection, type OnRemoved, type SettingsPreview } from "../api";
+import {
+  errorMessage,
+  getLanguages,
+  previewFromError,
+  setGameSelection,
+  type OnRemoved,
+  type SettingsPreview,
+} from "../api";
 import { plural } from "../format";
 import { useAsync } from "../hooks";
 import { RemovalConfirmModal } from "./SettingsFields";

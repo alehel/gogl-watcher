@@ -382,7 +382,9 @@ function ContentStep({
       />
       <div className="field">
         <span className="field-label">Languages</span>
-        <span className="hint">Installers exist per language; pick every language you want. At least one is required.</span>
+        <span className="hint">
+          Installers exist per language; pick every language you want. At least one is required.
+        </span>
         {languagesError ? (
           <span className="err-text small">Could not load the language list: {errorMessage(languagesError)}</span>
         ) : languages.length === 0 ? (
