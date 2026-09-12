@@ -917,68 +917,98 @@ func (d *DB) UpsertDesiredFileVerified(ctx context.Context, f File, localExists 
 		return UpsertFileResult{ID: id, Inserted: true}, nil
 	}
 	e := existing[0]
-	status := e.Status
-	prev := e.PreviousPath
-	updated := false
-	// GOG's manifest sizes are not byte-exact, and the downloader replaces size
-	// with the real byte count once it knows it, so a size change is only ever
-	// detected between two manifest sizes. A stored manifest size of 0 is unknown
-	// (rows from before the column existed, manifests without a size) and never
-	// counts as a change.
-	sizeChanged := f.Size > 0 && e.ManifestSize > 0 && e.ManifestSize != f.Size
-	changed := e.Version != f.Version || sizeChanged
-	// Re-activated by a settings change: keep the file if it is still on disk
-	// and is really this version (a remembered previous_path means the copy on
-	// disk is an older build that was waiting to be replaced).
-	reactivating := !e.Active || status == StatusInactive
-	kept := reactivating && e.LocalPath != "" && e.PreviousPath == "" && localExists(e.LocalPath)
+	onDisk := e.LocalPath != "" && localExists(e.LocalPath)
+	changed := metadataChange(e, f)
 	// A copy on disk can be held against GOG's checksum, which is the only
-	// authoritative answer; the metadata comparison above is a guess that can be
-	// wrong in either direction. Nothing else is worth a request: a file that is
-	// not downloaded is fetched whatever the answer would be.
-	if verify != nil && e.MD5 != "" && ((e.Active && status == StatusDone && e.LocalPath != "") || kept) {
+	// authoritative answer; the metadata comparison is a guess that can be wrong
+	// in either direction. Nothing else is worth a request: a file that is not
+	// downloaded is fetched whatever the answer would be.
+	if verify != nil && e.MD5 != "" && ((e.Active && e.Status == StatusDone && e.LocalPath != "") || keptCopy(e, onDisk)) {
 		if got, err := verify(ctx, e, f, changed); err == nil {
 			changed = got
 		}
 	}
-	if reactivating {
-		if kept && !changed {
-			status = StatusDone
-		} else {
-			status = StatusPending
-			if kept {
-				// The kept copy is an older build: replace it once the new one is in place.
-				prev = e.LocalPath
-				updated = true
-			}
-		}
-	}
-	if (status == StatusDone || status == StatusError) && changed {
-		// A new build also supersedes a failed attempt at the old one.
-		if status == StatusDone {
-			prev = e.LocalPath
-		}
-		status = StatusPending
-		updated = true
-	}
-	if status == StatusDone && e.LocalPath != "" && !localExists(e.LocalPath) {
-		status = StatusPending
-	}
-	size := f.Size
-	if !changed && e.LocalPath != "" && e.Size > 0 {
-		// The transfer already measured the real size; the manifest is an estimate.
-		size = e.Size
-	}
+	u := planUpsert(e, f, changed, onDisk)
 	_, err = d.ExecContext(ctx, `UPDATE files SET game_id = ?, os = ?, language = ?, name = ?, version = ?, size = ?, manifest_size = ?, downlink = ?, rel_dir = ?,
 		status = ?, active = 1, previous_path = ?, error = CASE WHEN ? = 'pending' AND status <> 'pending' THEN '' ELSE error END,
 		attempts = CASE WHEN ? = 'pending' AND status <> 'pending' THEN 0 ELSE attempts END, next_attempt_at = 0, updated_at = ? WHERE id = ?`,
-		f.GameID, f.OS, f.Language, f.Name, f.Version, size, f.Size, f.Downlink, f.RelDir, status, prev, status, status, now, e.ID)
+		f.GameID, f.OS, f.Language, f.Name, f.Version, u.size, f.Size, f.Downlink, f.RelDir, u.status, u.prev, u.status, u.status, now, e.ID)
 	if err != nil {
 		return UpsertFileResult{}, err
 	}
 	// A failed row keeps its partial file too, so a new build must discard it as well.
 	changedWhilePending := e.Active && (e.Status == StatusPending || e.Status == StatusError) && (changed || e.Downlink != f.Downlink)
-	return UpsertFileResult{ID: e.ID, Updated: updated, Changed: changedWhilePending, LocalPath: e.LocalPath}, nil
+	return UpsertFileResult{ID: e.ID, Updated: u.updated, Changed: changedWhilePending, LocalPath: e.LocalPath}, nil
+}
+
+// metadataChange is what GOG's manifest alone says about whether the file was
+// replaced. GOG's manifest sizes are not byte-exact, and the downloader replaces
+// size with the real byte count once it knows it, so a size change is only ever
+// detected between two manifest sizes. A stored manifest size of 0 is unknown
+// (rows from before the column existed, manifests without a size) and never
+// counts as a change.
+func metadataChange(stored, next File) bool {
+	sizeChanged := next.Size > 0 && stored.ManifestSize > 0 && stored.ManifestSize != next.Size
+	return stored.Version != next.Version || sizeChanged
+}
+
+// reactivated reports whether a settings change is bringing a dropped row back.
+func reactivated(stored File) bool { return !stored.Active || stored.Status == StatusInactive }
+
+// keptCopy reports whether such a row still has its own download on disk. A
+// remembered previous_path means the copy there is an older build that was
+// waiting to be replaced, so it is not this file.
+func keptCopy(stored File, onDisk bool) bool {
+	return reactivated(stored) && stored.PreviousPath == "" && onDisk
+}
+
+// fileUpdate is what an incoming file does to the row that is already stored.
+type fileUpdate struct {
+	status string
+	// prev is the downloaded copy that the next successful download replaces,
+	// kept until then so an update never leaves the game without an installer.
+	prev string
+	// size is the best size to record: see metadataChange on why the stored one
+	// can be better than the one GOG just sent.
+	size int64
+	// updated marks a file that was downloaded and now has to be fetched again.
+	updated bool
+}
+
+// planUpsert decides what the file GOG offers now (next) means for the row that
+// is stored (stored). changed says whether it really is another build — the
+// checksum's answer where there is one, GOG's metadata otherwise — and onDisk
+// whether the row's local_path is still there. It touches nothing: every input
+// is already in hand, so the rules can be read, and tested, on their own.
+func planUpsert(stored, next File, changed, onDisk bool) fileUpdate {
+	u := fileUpdate{status: stored.Status, prev: stored.PreviousPath, size: next.Size}
+	kept := keptCopy(stored, onDisk)
+	if reactivated(stored) {
+		switch {
+		case kept && !changed:
+			u.status = StatusDone
+		case kept:
+			// The kept copy is an older build: replace it once the new one is in place.
+			u.status, u.prev, u.updated = StatusPending, stored.LocalPath, true
+		default:
+			u.status = StatusPending
+		}
+	}
+	if (u.status == StatusDone || u.status == StatusError) && changed {
+		// A new build also supersedes a failed attempt at the old one.
+		if u.status == StatusDone {
+			u.prev = stored.LocalPath
+		}
+		u.status, u.updated = StatusPending, true
+	}
+	if u.status == StatusDone && stored.LocalPath != "" && !onDisk {
+		u.status = StatusPending
+	}
+	if !changed && stored.LocalPath != "" && stored.Size > 0 {
+		// The transfer already measured the real size; the manifest is an estimate.
+		u.size = stored.Size
+	}
+	return u
 }
 
 // DeactivateOtherFiles marks active files of the game not in keepIDs as inactive
