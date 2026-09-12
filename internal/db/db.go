@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -332,24 +333,10 @@ func (s Settings) WantsGame(g Game) bool {
 }
 
 // WantsPlatform reports whether os is selected.
-func (s Settings) WantsPlatform(os string) bool {
-	for _, p := range s.Platforms {
-		if p == os {
-			return true
-		}
-	}
-	return false
-}
+func (s Settings) WantsPlatform(os string) bool { return slices.Contains(s.Platforms, os) }
 
 // WantsLanguage reports whether lang is selected.
-func (s Settings) WantsLanguage(lang string) bool {
-	for _, l := range s.Languages {
-		if l == lang {
-			return true
-		}
-	}
-	return false
-}
+func (s Settings) WantsLanguage(lang string) bool { return slices.Contains(s.Languages, lang) }
 
 // GetSettings loads the stored settings, falling back to defaults.
 func (d *DB) GetSettings(ctx context.Context) (Settings, error) {
@@ -578,39 +565,16 @@ func (d *DB) ListGames(ctx context.Context) ([]Game, error) {
 	return out, rows.Err()
 }
 
-// ListGameIDs returns every game id.
-func (d *DB) ListGameIDs(ctx context.Context, ownedOnly bool) ([]int64, error) {
-	q := `SELECT id FROM games`
-	if ownedOnly {
-		q += ` WHERE owned = 1`
-	}
-	rows, err := d.QueryContext(ctx, q+` ORDER BY title COLLATE NOCASE`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
-
 // SetGamesSelected marks the given games as selected (or not) for download.
 func (d *DB) SetGamesSelected(ctx context.Context, ids []int64, selected bool) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	ph := strings.Repeat("?,", len(ids))
 	args := []any{b2i(selected), time.Now().UnixMilli()}
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	_, err := d.ExecContext(ctx, `UPDATE games SET selected = ?, updated_at = ? WHERE id IN (`+ph[:len(ph)-1]+`)`, args...)
+	_, err := d.ExecContext(ctx, `UPDATE games SET selected = ?, updated_at = ? WHERE id IN (`+placeholders(len(ids))+`)`, args...)
 	return err
 }
 
@@ -619,13 +583,11 @@ func (d *DB) MarkGamesNotOwned(ctx context.Context, keep []int64) error {
 	if len(keep) == 0 {
 		return nil
 	}
-	ph := strings.Repeat("?,", len(keep))
-	ph = ph[:len(ph)-1]
 	args := make([]any, len(keep))
 	for i, id := range keep {
 		args[i] = id
 	}
-	_, err := d.ExecContext(ctx, `UPDATE games SET owned = 0 WHERE id NOT IN (`+ph+`)`, args...)
+	_, err := d.ExecContext(ctx, `UPDATE games SET owned = 0 WHERE id NOT IN (`+placeholders(len(keep))+`)`, args...)
 	return err
 }
 
@@ -857,19 +819,19 @@ func (d *DB) NextPendingFiles(ctx context.Context, limit int, exclude []int64) (
 	where := `WHERE status = 'pending' AND active = 1 AND next_attempt_at <= ?`
 	args := []any{now}
 	if len(exclude) > 0 {
-		ph := strings.Repeat("?,", len(exclude))
-		where += ` AND id NOT IN (` + ph[:len(ph)-1] + `)`
+		where += ` AND id NOT IN (` + placeholders(len(exclude)) + `)`
 		for _, id := range exclude {
 			args = append(args, id)
 		}
 	}
-	// Prefer finishing games that are already partially downloaded, then small files first.
+	// Keep a game's files together (so one game finishes before the next starts),
+	// and take its small files first.
 	where += ` ORDER BY game_id, size LIMIT ?`
 	args = append(args, limit)
 	return d.queryFiles(ctx, where, args...)
 }
 
-// CountFiles returns counts of pending/error/done active files.
+// CountFilesByStatus returns counts of pending/error/done active files.
 func (d *DB) CountFilesByStatus(ctx context.Context) (map[string]int, error) {
 	rows, err := d.QueryContext(ctx, `SELECT status, COUNT(*) FROM files WHERE active = 1 GROUP BY status`)
 	if err != nil {
@@ -1018,19 +980,16 @@ func (d *DB) DeactivateOtherFiles(ctx context.Context, gameID int64, keepIDs []i
 		return nil, err
 	}
 	var out []File
-	now := time.Now().UnixMilli()
 	for _, f := range files {
 		if keep[f.ID] {
 			continue
 		}
 		if (f.Status == StatusDone && f.LocalPath != "") || f.PreviousPath != "" {
-			if _, err := d.ExecContext(ctx, `UPDATE files SET active = 0, status = 'inactive', updated_at = ? WHERE id = ?`, now, f.ID); err != nil {
+			if err := d.SetFileInactive(ctx, f.ID); err != nil {
 				return nil, err
 			}
-		} else {
-			if _, err := d.ExecContext(ctx, `DELETE FROM files WHERE id = ?`, f.ID); err != nil {
-				return nil, err
-			}
+		} else if err := d.DeleteFile(ctx, f.ID); err != nil {
+			return nil, err
 		}
 		out = append(out, f)
 	}
@@ -1056,13 +1015,18 @@ func (d *DB) SetFileResolved(ctx context.Context, id int64, filename, localPath,
 	return err
 }
 
-// SetFileDone marks a download complete.
+// fileDoneSet is the SET clause that marks a file as downloaded. A finished
+// transfer has just been held against GOG's checksum, so it counts as verified:
+// the rolling re-check belongs to files that have sat on disk.
+const fileDoneSet = `SET status = 'done', local_path = ?, size = ?, previous_path = '', error = '', attempts = 0,
+	next_attempt_at = 0, downloaded_at = ?, verified_at = ?, updated_at = ?`
+
+// SetFileDone marks a download complete unconditionally. The downloader uses
+// CompleteFile instead; this is for callers that own the row already (tests,
+// and repairs that do not go through a transfer).
 func (d *DB) SetFileDone(ctx context.Context, id int64, localPath string, size int64) error {
 	now := time.Now().UnixMilli()
-	// A finished transfer has just been held against GOG's checksum, so it counts
-	// as verified: the rolling re-check belongs to files that have sat on disk.
-	_, err := d.ExecContext(ctx, `UPDATE files SET status = 'done', local_path = ?, size = ?, previous_path = '', error = '', attempts = 0,
-		next_attempt_at = 0, downloaded_at = ?, verified_at = ?, updated_at = ? WHERE id = ?`, localPath, size, now, now, now, id)
+	_, err := d.ExecContext(ctx, `UPDATE files `+fileDoneSet+` WHERE id = ?`, localPath, size, now, now, now, id)
 	return err
 }
 
@@ -1072,8 +1036,8 @@ func (d *DB) SetFileDone(ctx context.Context, id int64, localPath string, size i
 // then left pending for the new version.
 func (d *DB) CompleteFile(ctx context.Context, id int64, localPath string, size int64, downlink, version string) (bool, error) {
 	now := time.Now().UnixMilli()
-	res, err := d.ExecContext(ctx, `UPDATE files SET status = 'done', local_path = ?, size = ?, previous_path = '', error = '', attempts = 0,
-		next_attempt_at = 0, downloaded_at = ?, verified_at = ?, updated_at = ? WHERE id = ? AND downlink = ? AND version = ?`, localPath, size, now, now, now, id, downlink, version)
+	res, err := d.ExecContext(ctx, `UPDATE files `+fileDoneSet+` WHERE id = ? AND downlink = ? AND version = ?`,
+		localPath, size, now, now, now, id, downlink, version)
 	if err != nil {
 		return false, err
 	}
@@ -1142,11 +1106,9 @@ func (d *DB) MarkMissingDone(ctx context.Context, exists func(path string) bool)
 	return n, nil
 }
 
-// LibraryTotals aggregates bytes over active files.
-func (d *DB) LibraryTotals(ctx context.Context) (bytesTotal, bytesDone int64, err error) {
-	err = d.QueryRowContext(ctx, `SELECT COALESCE(SUM(size),0), COALESCE(SUM(CASE WHEN status='done' THEN size ELSE 0 END),0) FROM files WHERE active = 1`).
-		Scan(&bytesTotal, &bytesDone)
-	return
+// placeholders returns "?,?,…" for an IN clause of n values.
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
 func b2i(b bool) int {

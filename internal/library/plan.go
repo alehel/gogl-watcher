@@ -1,9 +1,10 @@
 package library
 
 import (
+	"cmp"
 	"fmt"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/alehel/gogl-watcher/internal/db"
@@ -20,14 +21,14 @@ type PlannedProduct struct {
 // under the given settings. owned may be nil, in which case all DLC count as owned.
 func Plan(game db.Game, p *gog.Product, owned gog.OwnedSet, s db.Settings) []PlannedProduct {
 	var out []PlannedProduct
-	base := PlannedProduct{Product: db.Product{ID: p.ID, GameID: game.ID, Title: firstNonEmpty(p.Title, game.Title), IsDLC: false}}
+	base := PlannedProduct{Product: db.Product{ID: p.ID, GameID: game.ID, Title: cmp.Or(p.Title, game.Title), IsDLC: false}}
 	base.Files = planFiles(game.ID, p.ID, p.Downloads, "", s)
 	out = append(out, base)
 	if !s.IncludeDLC {
 		return out
 	}
-	dlcs := append([]gog.Product{}, p.ExpandedDLCs...)
-	sort.Slice(dlcs, func(i, j int) bool { return dlcs[i].Title < dlcs[j].Title })
+	dlcs := slices.Clone(p.ExpandedDLCs)
+	slices.SortFunc(dlcs, func(a, b gog.Product) int { return cmp.Compare(a.Title, b.Title) })
 	usedFolders := map[string]bool{}
 	for _, d := range dlcs {
 		if d.ID == 0 || (owned != nil && !owned[d.ID]) {
@@ -123,13 +124,6 @@ func normalizeOS(os string) string {
 		return "linux"
 	}
 	return strings.ToLower(os)
-}
-
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }
 
 // LocalRelPath returns the library-relative path for a file with a resolved name.

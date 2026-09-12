@@ -3,6 +3,7 @@
 package downloader
 
 import (
+	"cmp"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
@@ -62,6 +63,15 @@ type transfer struct {
 	cancel     context.CancelFunc
 }
 
+// progress snapshots the transfer. The caller must hold Manager.mu, which is
+// what guards filename.
+func (t *transfer) progress() Progress {
+	return Progress{
+		FileID: t.file.ID, GameID: t.file.GameID, GameTitle: t.gameTitle, Filename: t.filename,
+		Size: t.size.Load(), Downloaded: t.downloaded.Load(), SpeedBps: float64(t.speed.Load()), StartedAt: t.startedAt,
+	}
+}
+
 // Manager runs the download queue.
 type Manager struct {
 	db    *db.DB
@@ -98,7 +108,7 @@ func New(d *db.DB, g gog.API, paths library.Paths, log *slog.Logger) *Manager {
 func (m *Manager) Configure(s db.Settings, enabled bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.maxActive = s.MaxConcurrentDownloads
+	m.maxActive = max(s.MaxConcurrentDownloads, 1) // a stored 0 would stall the queue
 	m.paused = s.DownloadsPaused
 	m.enabled = enabled
 	limit := int64(s.SpeedLimitKBps) * 1024
@@ -108,10 +118,7 @@ func (m *Manager) Configure(s db.Settings, enabled bool) {
 			m.limiter.SetLimit(rate.Inf)
 			m.limiter.SetBurst(minBurst)
 		} else {
-			burst := int(limit)
-			if burst < minBurst {
-				burst = minBurst
-			}
+			burst := max(int(limit), minBurst)
 			m.limiter.SetLimit(rate.Limit(limit))
 			m.limiter.SetBurst(burst)
 		}
@@ -167,22 +174,20 @@ func (m *Manager) Active() []Progress {
 	defer m.mu.Unlock()
 	out := make([]Progress, 0, len(m.active))
 	for _, t := range m.active {
-		out = append(out, Progress{
-			FileID: t.file.ID, GameID: t.file.GameID, GameTitle: t.gameTitle, Filename: t.filename,
-			Size: t.size.Load(), Downloaded: t.downloaded.Load(), SpeedBps: float64(t.speed.Load()), StartedAt: t.startedAt,
-		})
+		out = append(out, t.progress())
 	}
 	return out
 }
 
 // ProgressFor returns the transfer state of one file, if active.
 func (m *Manager) ProgressFor(fileID int64) (Progress, bool) {
-	for _, p := range m.Active() {
-		if p.FileID == fileID {
-			return p, true
-		}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := m.active[fileID]
+	if t == nil {
+		return Progress{}, false
 	}
-	return Progress{}, false
+	return t.progress(), true
 }
 
 // Cancel aborts the transfer of a file if it is running.
@@ -292,7 +297,7 @@ func (m *Manager) fail(ctx context.Context, t *transfer, title string, err error
 	if errors.As(err, &ae) {
 		// The GOG session failed, not the file: keep it queued for when the user
 		// has re-authorized, without using up an attempt.
-		m.log.Warn("download needs a valid GOG session, will retry", "game", title, "file", firstNonEmpty(t.filename, t.file.Name), "error", err)
+		m.log.Warn("download needs a valid GOG session, will retry", "game", title, "file", cmp.Or(t.filename, t.file.Name), "error", err)
 		_ = m.db.DeferFile(ctx, t.file.ID, err.Error(), time.Minute)
 		return
 	}
@@ -302,12 +307,12 @@ func (m *Manager) fail(ctx context.Context, t *transfer, title string, err error
 		permanent = true
 	}
 	if attempts+1 >= maxAttempts || permanent {
-		m.log.Error("download failed", "game", title, "file", firstNonEmpty(t.filename, t.file.Name), "error", err)
+		m.log.Error("download failed", "game", title, "file", cmp.Or(t.filename, t.file.Name), "error", err)
 		_ = m.db.SetFileError(ctx, t.file.ID, err.Error(), 0)
 		return
 	}
 	wait := time.Duration(30*(1<<uint(attempts))) * time.Second
-	m.log.Warn("download failed, will retry", "game", title, "file", firstNonEmpty(t.filename, t.file.Name), "retry_in", wait, "error", err)
+	m.log.Warn("download failed, will retry", "game", title, "file", cmp.Or(t.filename, t.file.Name), "retry_in", wait, "error", err)
 	_ = m.db.SetFileError(ctx, t.file.ID, err.Error(), wait)
 }
 
@@ -338,7 +343,6 @@ func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error
 	dlCtx, abort := context.WithCancelCause(ctx)
 	defer abort(nil)
 	// Open the transfer first so a Content-Disposition name can be used when the URL has none.
-	partPath := ""
 	var offset int64
 	openWithOffset := func(off int64) (*gog.Download, error) {
 		return m.gog.OpenDownload(dlCtx, link.URL, off)
@@ -364,7 +368,7 @@ func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error
 		m.paths.RemovePart(f.LocalPath)
 	}
 	abs := m.paths.Abs(rel)
-	partPath = abs + ".part"
+	partPath := abs + ".part"
 	m.mu.Lock()
 	t.filename = filename // read by Active() under the same lock
 	m.mu.Unlock()
@@ -619,11 +623,4 @@ func fileMD5(path string) string {
 		return ""
 	}
 	return hex.EncodeToString(h.Sum(nil))
-}
-
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }
