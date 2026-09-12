@@ -185,7 +185,7 @@ type gameSummary struct {
 func (s *Server) summarize(g db.Game, st db.GameStats, active map[int64][]downloader.Progress, settings db.Settings) gameSummary {
 	out := gameSummary{
 		ID: g.ID, Title: g.Title, Slug: g.Slug, Image: g.Image, Folder: g.Folder,
-		WorksOn: map[string]bool{"windows": g.WorksWindows, "mac": g.WorksMac, "linux": g.WorksLinux},
+		WorksOn: worksOn(g),
 		Owned:   g.Owned, Selected: g.Selected, FilesTotal: st.FilesTotal, FilesDone: st.FilesDone, BytesTotal: st.BytesTotal, BytesDone: st.BytesDone,
 		LastSyncedAt: g.DetailsSyncedAt, UpdatedAt: g.UpdatedAt, DetailsError: g.DetailsError,
 	}
@@ -217,6 +217,15 @@ func (s *Server) summarize(g db.Game, st db.GameStats, active map[int64][]downlo
 		}
 	} else if out.Status == "complete" {
 		out.Progress = 1
+	}
+	return out
+}
+
+// worksOn is the game's platform support, keyed the way the UI expects it.
+func worksOn(g db.Game) map[string]bool {
+	out := make(map[string]bool, len(db.Platforms))
+	for _, p := range db.Platforms {
+		out[p] = g.WorksOn(p)
 	}
 	return out
 }

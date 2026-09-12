@@ -210,6 +210,25 @@ const (
 	DownloadSelected = "selected" // only games the user selected
 )
 
+// Platforms are the installer platforms the application knows, in the order the
+// UI lists them.
+var Platforms = []string{"windows", "mac", "linux"}
+
+// NormalizePlatform maps the spellings that turn up — GOG's installer metadata,
+// the settings API, settings stored by an older version — onto one of Platforms,
+// or "" when the value is none of them.
+func NormalizePlatform(os string) string {
+	switch strings.ToLower(strings.TrimSpace(os)) {
+	case "windows", "win":
+		return "windows"
+	case "mac", "osx", "macos":
+		return "mac"
+	case "linux":
+		return "linux"
+	}
+	return ""
+}
+
 // Settings are the user-editable options shown in the UI.
 type Settings struct {
 	// DownloadMode is "all" or "selected"; empty until the setup wizard asked.
@@ -244,14 +263,10 @@ func DefaultSettings() Settings {
 func (s *Settings) Normalize() error {
 	seen := map[string]bool{}
 	var plats []string
-	for _, p := range s.Platforms {
-		p = strings.ToLower(strings.TrimSpace(p))
-		switch p {
-		case "windows", "mac", "linux":
-		case "osx", "macos":
-			p = "mac"
-		default:
-			return fmt.Errorf("unknown platform %q", p)
+	for _, raw := range s.Platforms {
+		p := NormalizePlatform(raw)
+		if p == "" {
+			return fmt.Errorf("unknown platform %q", raw)
 		}
 		if !seen[p] {
 			seen[p] = true
@@ -469,7 +484,7 @@ type Game struct {
 
 // WorksOn reports whether GOG lists the game as running on a platform.
 func (g Game) WorksOn(os string) bool {
-	switch os {
+	switch NormalizePlatform(os) {
 	case "windows":
 		return g.WorksWindows
 	case "mac":

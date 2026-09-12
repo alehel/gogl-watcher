@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/alehel/gogl-watcher/internal/db"
 	"github.com/alehel/gogl-watcher/internal/gog"
@@ -50,7 +49,7 @@ func planFiles(gameID, productID int64, dl gog.Downloads, dlcFolder string, s db
 	var files []db.File
 	byOS := map[string][]gog.Installer{}
 	for _, inst := range dl.Installers {
-		os := normalizeOS(inst.OS)
+		os := db.NormalizePlatform(inst.OS)
 		byOS[os] = append(byOS[os], inst)
 	}
 	for _, os := range s.Platforms {
@@ -112,18 +111,6 @@ func chooseLanguages(installers []gog.Installer, s db.Settings) []gog.Installer 
 		}
 	}
 	return []gog.Installer{installers[0]}
-}
-
-func normalizeOS(os string) string {
-	switch strings.ToLower(os) {
-	case "windows", "win":
-		return "windows"
-	case "mac", "osx", "macos":
-		return "mac"
-	case "linux":
-		return "linux"
-	}
-	return strings.ToLower(os)
 }
 
 // LocalRelPath returns the library-relative path for a file with a resolved name.
