@@ -60,6 +60,7 @@ type transfer struct {
 	speed      atomic.Int64 // bytes/s, updated once a second
 	startedAt  time.Time
 	cancel     context.CancelFunc
+	done       chan struct{} // closed once the transfer goroutine has left
 }
 
 // progress snapshots the transfer. The caller must hold Manager.mu, which is
@@ -189,13 +190,16 @@ func (m *Manager) ProgressFor(fileID int64) (Progress, bool) {
 	return t.progress(), true
 }
 
-// Cancel aborts the transfer of a file if it is running.
+// Cancel aborts the transfer of a file if it is running and returns once it
+// has stopped, so the caller can remove the partial file without the transfer
+// writing to it, and so nothing of the file is in flight when its row goes.
 func (m *Manager) Cancel(fileID int64) {
 	m.mu.Lock()
 	t := m.active[fileID]
 	m.mu.Unlock()
 	if t != nil {
 		t.cancel()
+		<-t.done
 	}
 }
 
@@ -253,7 +257,7 @@ func (m *Manager) startTransfer(parent context.Context, f db.File) {
 		return
 	}
 	ctx, cancel := context.WithCancel(parent)
-	t := &transfer{file: f, gameTitle: game.Title, filename: f.Filename, startedAt: time.Now(), cancel: cancel}
+	t := &transfer{file: f, gameTitle: game.Title, filename: f.Filename, startedAt: time.Now(), cancel: cancel, done: make(chan struct{})}
 	t.size.Store(f.Size)
 	m.mu.Lock()
 	// The queue was read without the lock held, so re-check the pause and
@@ -273,6 +277,7 @@ func (m *Manager) startTransfer(parent context.Context, f db.File) {
 			m.mu.Lock()
 			delete(m.active, f.ID)
 			m.mu.Unlock()
+			close(t.done)
 			m.Wake()
 		}()
 		err := m.download(ctx, t, *game)

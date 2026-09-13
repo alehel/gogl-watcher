@@ -163,21 +163,20 @@ func (s *Syncer) dropFiles(ctx context.Context, list []unwanted, onRemoved Remov
 	if err := confirmRemoval(list, onRemoved); err != nil {
 		return err
 	}
+	// The rows go first, all of them, and the transfers after: a transfer that is
+	// aborted wakes the download queue, which would otherwise start the next
+	// file of the same game again from a row that is about to be dropped (and
+	// then run on with no row to cancel it through).
+	deleted := 0
 	for _, u := range list {
 		f := u.file
-		if s.OnDrop != nil {
-			s.OnDrop(f.ID)
-		}
 		onDisk := downloadedPath(f)
-		// A transfer in progress is abandoned either way; only its partial file goes.
-		if f.Status != db.StatusDone {
-			s.paths.RemovePart(f.LocalPath)
-		}
 		switch {
 		case onDisk == "":
 			if err := s.db.DeleteFile(ctx, f.ID); err != nil {
 				return err
 			}
+			deleted++
 		case onRemoved == RemovalDelete:
 			if err := s.paths.Remove(onDisk); err != nil {
 				return fmt.Errorf("deleting %s: %w", onDisk, err)
@@ -185,6 +184,7 @@ func (s *Syncer) dropFiles(ctx context.Context, list []unwanted, onRemoved Remov
 			if err := s.db.DeleteFile(ctx, f.ID); err != nil {
 				return err
 			}
+			deleted++
 			s.log.Info("deleted file after "+why, "path", onDisk, "reason", u.reason)
 		default:
 			if err := s.db.SetFileInactive(ctx, f.ID); err != nil {
@@ -192,8 +192,16 @@ func (s *Syncer) dropFiles(ctx context.Context, list []unwanted, onRemoved Remov
 			}
 		}
 	}
+	for _, u := range list {
+		f := u.file
+		if f.Status == db.StatusDone {
+			continue
+		}
+		// A transfer in progress is abandoned either way; only its partial file goes.
+		s.abortTransfer(f.ID, f.LocalPath)
+	}
 	if len(list) > 0 {
-		s.log.Info(why+" dropped tracked files", "files", len(list), "action", onRemoved)
+		s.log.Info(why+" dropped tracked files", "files", len(list), "deleted", deleted, "action", onRemoved)
 	}
 	return nil
 }
