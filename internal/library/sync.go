@@ -99,6 +99,11 @@ type Syncer struct {
 	// planSem (capacity 1) serialises a settings change with the start of a sync,
 	// so a sync cannot read the settings while ApplySettings is still storing them.
 	planSem chan struct{}
+	// gameSyncs are the syncs of single games in progress, so that a settings
+	// change can stop them: one that planned with the old settings would put
+	// back the files the change dropped.
+	gameSyncsMu sync.Mutex
+	gameSyncs   map[*gameSync]struct{}
 	// rollingLeft is how many files the running full sync may still re-check
 	// against GOG's checksums without a reason to suspect them.
 	rollingLeft atomic.Int64
@@ -115,6 +120,64 @@ func (s *Syncer) lockPlan(ctx context.Context) bool {
 }
 
 func (s *Syncer) unlockPlan() { <-s.planSem }
+
+// gameSync is one running sync of a single game.
+type gameSync struct {
+	cancel context.CancelCauseFunc
+	done   chan struct{}
+}
+
+// errSettingsChanged is why a sync of one game is stopped by ApplySettings.
+var errSettingsChanged = errors.New("interrupted by a settings change")
+
+// beginGameSync registers a running sync of one game and returns its context
+// and the function that unregisters it.
+func (s *Syncer) beginGameSync(ctx context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	g := &gameSync{cancel: cancel, done: make(chan struct{})}
+	s.gameSyncsMu.Lock()
+	if s.gameSyncs == nil {
+		s.gameSyncs = map[*gameSync]struct{}{}
+	}
+	s.gameSyncs[g] = struct{}{}
+	s.gameSyncsMu.Unlock()
+	return ctx, func() {
+		cancel(nil)
+		s.gameSyncsMu.Lock()
+		delete(s.gameSyncs, g)
+		s.gameSyncsMu.Unlock()
+		close(g.done)
+	}
+}
+
+// stopGameSyncs cancels the syncs of single games that are running and waits
+// until they have stopped, or until ctx ends.
+func (s *Syncer) stopGameSyncs(ctx context.Context) error {
+	s.gameSyncsMu.Lock()
+	running := make([]*gameSync, 0, len(s.gameSyncs))
+	for g := range s.gameSyncs {
+		running = append(running, g)
+	}
+	s.gameSyncsMu.Unlock()
+	for _, g := range running {
+		g.cancel(errSettingsChanged)
+	}
+	for _, g := range running {
+		select {
+		case <-g.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+// gameSyncsRunning is how many syncs of single games are in progress.
+func (s *Syncer) gameSyncsRunning() int {
+	s.gameSyncsMu.Lock()
+	defer s.gameSyncsMu.Unlock()
+	return len(s.gameSyncs)
+}
 
 // lockGame takes the per-game lock and returns the function that releases it.
 func (s *Syncer) lockGame(id int64) func() {
@@ -584,18 +647,27 @@ func (s *Syncer) abortTransfer(fileID int64, localPath string) {
 	s.paths.RemovePart(localPath)
 }
 
-// SyncGame refreshes one game's downloads from GOG.
+// SyncGame refreshes one game's downloads from GOG. A settings change that
+// alters the plan stops it (errSettingsChanged); the full sync the change
+// triggers plans the game again with the new settings.
 func (s *Syncer) SyncGame(ctx context.Context, id int64) error {
 	if !s.gog.Authenticated() {
 		return errors.New("not authorized with GOG")
 	}
+	ctx, end := s.beginGameSync(ctx)
+	defer end()
+	// As for a full sync: not while a settings change is storing new settings.
+	if !s.lockPlan(ctx) {
+		return interrupted(ctx)
+	}
 	settings, err := s.db.GetSettings(ctx)
+	s.unlockPlan()
 	if err != nil {
 		return err
 	}
 	owned, err := s.gog.OwnedIDs(ctx)
 	if err != nil {
-		return err
+		return interrupted(ctx, err)
 	}
 	// The rolling re-check works through the whole library and belongs to a full
 	// sync; one game's sync only follows up on what it is told about that game.
@@ -603,7 +675,22 @@ func (s *Syncer) SyncGame(ctx context.Context, id int64) error {
 	if s.OnChange != nil {
 		s.OnChange()
 	}
-	return err
+	return interrupted(ctx, err)
+}
+
+// interrupted returns why ctx was cancelled when that is a settings change,
+// which the caller (and the user) would rather hear than "context canceled";
+// otherwise the first non-nil error given, or ctx's own.
+func interrupted(ctx context.Context, errs ...error) error {
+	if errors.Is(context.Cause(ctx), errSettingsChanged) {
+		return errSettingsChanged
+	}
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
 }
 
 // syncGame plans one game's files. rolling allows the slow re-check of files

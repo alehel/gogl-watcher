@@ -635,3 +635,68 @@ func TestSyncMovesUpdatedAtOnlyWhenTheGameChanged(t *testing.T) {
 		}
 	}
 }
+
+// A sync of one game (the game page's "re-check", the sync after selecting a
+// game) that is running when the settings change plans with the old settings:
+// it must not put back the files the change dropped. The user may just have
+// answered "delete", and the files would be downloaded all over again.
+func TestApplySettingsStopsRunningGameSync(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	api := gatedAPI{Mock: m, gate: make(chan struct{})}
+	d, syncer, _ := newSyncTest(t, api)
+	ctx := context.Background()
+	old := saveSettings(t, d, "windows", "linux")
+	close(api.gate)
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const stardew = 1207664663 // windows and linux installers
+	linuxFiles := func() int {
+		files, _ := d.ListActiveFilesByGame(ctx, stardew)
+		n := 0
+		for _, f := range files {
+			if f.OS == "linux" {
+				n++
+			}
+		}
+		return n
+	}
+	if linuxFiles() == 0 {
+		t.Fatal("expected linux files after the first sync")
+	}
+
+	// The game's own sync stalls in the details fetch; meanwhile linux is removed.
+	api.gate = make(chan struct{})
+	syncer.gog = api
+	errc := make(chan error, 1)
+	go func() { errc <- syncer.SyncGame(ctx, stardew) }()
+	waitFor(t, 5*time.Second, func() bool { return syncer.gameSyncsRunning() > 0 })
+	ns := old
+	ns.Platforms = []string{"windows"}
+	applied := make(chan error, 1)
+	go func() { applied <- syncer.ApplySettings(ctx, ns, RemovalDelete) }()
+	select {
+	case err := <-errc:
+		if err == nil {
+			t.Fatal("the game sync went on planning with the old settings")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the settings change did not stop the game sync")
+	}
+	if err := <-applied; err != nil {
+		t.Fatal(err)
+	}
+	close(api.gate)
+	if n := linuxFiles(); n != 0 {
+		t.Errorf("%d linux files tracked again although the platform was removed", n)
+	}
+
+	// A game sync that starts while the change is in progress uses the new settings.
+	if err := syncer.SyncGame(ctx, stardew); err != nil {
+		t.Fatal(err)
+	}
+	if n := linuxFiles(); n != 0 {
+		t.Errorf("%d linux files planned by the next game sync", n)
+	}
+}

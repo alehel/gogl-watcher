@@ -1279,15 +1279,17 @@ func (d *DB) SetFileVerified(ctx context.Context, id int64) error {
 	return err
 }
 
-// SetFileError records a failed attempt. If retryAfter is zero the file goes to the error state.
+// SetFileError records a failed attempt. If retryAfter is zero the file goes to
+// the error state. A row that was dropped or kept as inactive while the
+// transfer ran is left as it is: nothing tracks it anymore.
 func (d *DB) SetFileError(ctx context.Context, id int64, msg string, retryAfter time.Duration) error {
 	now := time.Now()
 	if retryAfter > 0 {
-		_, err := d.ExecContext(ctx, `UPDATE files SET status = 'pending', error = ?, attempts = attempts + 1, next_attempt_at = ?, updated_at = ? WHERE id = ?`,
+		_, err := d.ExecContext(ctx, `UPDATE files SET status = 'pending', error = ?, attempts = attempts + 1, next_attempt_at = ?, updated_at = ? WHERE id = ? AND active = 1`,
 			msg, now.Add(retryAfter).UnixMilli(), now.UnixMilli(), id)
 		return err
 	}
-	_, err := d.ExecContext(ctx, `UPDATE files SET status = 'error', error = ?, attempts = attempts + 1, next_attempt_at = 0, updated_at = ? WHERE id = ?`,
+	_, err := d.ExecContext(ctx, `UPDATE files SET status = 'error', error = ?, attempts = attempts + 1, next_attempt_at = 0, updated_at = ? WHERE id = ? AND active = 1`,
 		msg, now.UnixMilli(), id)
 	return err
 }

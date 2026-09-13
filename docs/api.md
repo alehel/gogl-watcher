@@ -223,7 +223,9 @@ ten-minute cache; 502 when GOG cannot be reached.
   ] } ] }
 ```
 
-### `POST /api/games/{id}/sync` – refresh this game's details from GOG now. `{ "ok": true }`.
+### `POST /api/games/{id}/sync` – refresh this game's details from GOG now. `{ "ok": true }`; 502 with
+`"interrupted by a settings change"` when a settings change stopped it (the full sync that change
+triggers plans the game again).
 ### `POST /api/games/{id}/retry` – reset this game's failed files to pending. `{ "ok": true }`.
 ### `POST /api/files/{id}/retry` – reset one failed file to pending. `{ "ok": true }`.
 

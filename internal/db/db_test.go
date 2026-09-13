@@ -413,3 +413,34 @@ func TestNextPendingFilesSkipsGamesNotOwned(t *testing.T) {
 		t.Fatalf("queue = %+v, want both files", next)
 	}
 }
+
+// A transfer that fails after its row was dropped (deselected, platform
+// removed) or kept as inactive must not write the row back to pending: nothing
+// tracks it anymore, and an inactive row that says "pending" is shown as such.
+func TestSetFileErrorLeavesDroppedRowsAlone(t *testing.T) {
+	d := openTest(t)
+	ctx := context.Background()
+	if err := d.UpsertGame(ctx, Game{ID: 1, Title: "Game", Folder: "Game"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpsertProduct(ctx, Product{ID: 1, GameID: 1, Title: "Game"}); err != nil {
+		t.Fatal(err)
+	}
+	f := File{GameID: 1, ProductID: 1, Kind: "installer", OS: "windows", Language: "en", GogID: "a", Name: "Game", Version: "1", Size: 1, Downlink: "x", RelDir: "windows"}
+	res, err := d.UpsertDesiredFile(ctx, f, func(string) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetFileInactive(ctx, res.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, retry := range []time.Duration{time.Minute, 0} {
+		if err := d.SetFileError(ctx, res.ID, "boom", retry); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := d.GetFile(ctx, res.ID)
+		if got.Active || got.Status != StatusInactive || got.Error != "" {
+			t.Errorf("retry %v: dropped row written back: %+v", retry, got)
+		}
+	}
+}

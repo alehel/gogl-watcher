@@ -273,7 +273,12 @@ func (s *Syncer) ApplySettings(ctx context.Context, ns db.Settings, onRemoved Re
 		if err := s.CancelAndWait(ctx); err != nil {
 			return err
 		}
-		// The sync may have planned more files before it stopped.
+		// A sync of one game would go on planning with the old settings, too. One
+		// that starts now waits for the plan lock, and so for the new settings.
+		if err := s.stopGameSyncs(ctx); err != nil {
+			return err
+		}
+		// The syncs may have planned more files before they stopped.
 		if list, err = s.findUnwanted(ctx, ns); err != nil {
 			return err
 		}
