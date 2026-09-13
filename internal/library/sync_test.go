@@ -488,3 +488,42 @@ func TestSyncFetchesBoxArtOnce(t *testing.T) {
 		t.Errorf("second sync asked for box art %d times, want 0", api.calls.Load())
 	}
 }
+
+// In the "selected and new" mode a game that appears in the library after the
+// first listing is selected on its own; the games of the first listing are not,
+// since "new" means bought after the mode was chosen.
+func TestSelectedNewModeSelectsGamesThatAppearLater(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	extra := m.Games[len(m.Games)-1]
+	m.Games = m.Games[:len(m.Games)-1]
+	d, syncer, _ := newSyncTest(t, m)
+	s := saveSettings(t, d, "windows")
+	s.DownloadMode = db.DownloadSelectedNew
+	_ = d.SaveSettings(context.Background(), s)
+
+	if err := syncer.SyncAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	games, _ := d.ListGames(context.Background())
+	for _, g := range games {
+		if g.Selected {
+			t.Fatalf("%q selected by the first listing", g.Title)
+		}
+	}
+
+	m.Games = append(m.Games, extra)
+	if err := syncer.SyncAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := d.GetGame(context.Background(), extra.Listed.ID)
+	if g == nil || !g.Selected {
+		t.Fatalf("game that appeared later is not selected: %+v", g)
+	}
+	games, _ = d.ListGames(context.Background())
+	for _, og := range games {
+		if og.ID != extra.Listed.ID && og.Selected {
+			t.Errorf("%q selected although it was there before", og.Title)
+		}
+	}
+}

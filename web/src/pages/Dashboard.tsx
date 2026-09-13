@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { getDownloads, NetworkError, startSync, type ActiveDownload, type Status } from "../api";
+import { getDownloads, NetworkError, selectsGames, startSync, type ActiveDownload, type Status } from "../api";
 import { ApiErrorNotice, EmptyState, Loading, Spinner, TimeAgo } from "../components/Common";
 import { DataTable } from "../components/DataTable";
 import { PauseButton } from "../components/PauseButton";
@@ -25,7 +25,7 @@ export function DashboardPage() {
   const diskFrac = ratio(status.disk.free_bytes, status.disk.total_bytes);
   const diskLow = status.disk.total_bytes > 0 && diskFrac < 0.05;
 
-  const selectedOnly = l.download_mode === "selected";
+  const selectedOnly = selectsGames(l.download_mode);
   const wanted = selectedOnly ? l.games - l.unselected : l.games;
   const parts: string[] = [
     selectedOnly

@@ -35,7 +35,7 @@ with an appropriate 4xx/5xx status. Timestamps are RFC 3339 strings or `null`.
   "library": {
     "games": 0, "complete": 0, "pending": 0, "downloading": 0,
     "partial": 0, "error": 0, "unavailable": 0, "unsynced": 0, "unselected": 0,
-    "download_mode": "all",         // "all" | "selected" (see settings)
+    "download_mode": "all",         // "all" | "selected" | "selected_new" (see settings)
     "bytes_total": 0, "bytes_done": 0
   },
   "disk": { "library_dir": "/library", "free_bytes": 0, "total_bytes": 0 }
@@ -78,7 +78,9 @@ Triggers the first library sync.
 
 ```json
 {
-  "download_mode": "all",                // "all" | "selected"; empty until the setup wizard asked
+  "download_mode": "all",                // "all" | "selected" | "selected_new"; empty until the setup wizard asked.
+                                         // "selected_new" is "selected" plus: a game that appears in the
+                                         // library after its first listing is selected as it does.
   "platforms": ["windows"],              // any of "windows" | "mac" | "linux"; empty until chosen
   "languages": ["en"],                   // GOG language codes, e.g. "en", "de", "fr"
   "language_fallback": true,             // download another language if none of the chosen exist
@@ -108,8 +110,8 @@ wanted if these settings were applied:
 }
 ```
 
-`unselected` appears when switching to `download_mode: "selected"` would drop files of games
-that are not selected.
+`unselected` appears when switching to `download_mode: "selected"` (or `"selected_new"`) would
+drop files of games that are not selected.
 
 ### `PUT /api/settings`
 Body `{ "settings": {...}, "on_removed": "keep" | "delete" | null }`.
@@ -146,7 +148,7 @@ the rest; `sort` then orders each of the two groups.
 } ] }
 ```
 
-Status meaning: `unselected` – download mode is `selected` and the game is not selected, so
+Status meaning: `unselected` – download mode is `selected` or `selected_new` and the game is not selected, so
 nothing is fetched for it; `unsynced` – details not fetched yet; `unavailable` – GOG offers no files
 matching the chosen platforms/languages; `pending` – wanted files not yet downloaded;
 `downloading` – at least one file currently transferring; `partial` – some done, some
@@ -186,7 +188,7 @@ background and queues their files; deselecting drops their tracked files exactly
 change does: with downloaded files present and `on_removed` null → 409
 `{ "error": "confirmation_required", "removed": {...}, "reasons": ["unselected"] }`, otherwise
 200 `{ "ok": true, "selected": true, "ids": [...] }`. Unknown ids → 404. The flag is stored in
-either download mode but only has an effect in `selected`.
+any download mode but only has an effect in `selected` and `selected_new`.
 
 ### `POST /api/games/{id}/sync` – refresh this game's details from GOG now. `{ "ok": true }`.
 ### `POST /api/games/{id}/retry` – reset this game's failed files to pending. `{ "ok": true }`.

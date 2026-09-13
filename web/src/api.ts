@@ -3,7 +3,9 @@
 
 export type SetupStep = "auth" | "games" | "platforms" | "content" | "done";
 /** Which games are downloaded: everything owned, or only games selected in the library. Empty until setup asked. */
-export type DownloadMode = "" | "all" | "selected";
+export type DownloadMode = "" | "all" | "selected" | "selected_new";
+/** Whether the mode downloads only selected games (with or without new games selecting themselves). */
+export const selectsGames = (mode: DownloadMode | undefined) => mode === "selected" || mode === "selected_new";
 export type SyncPhase = "" | "listing" | "artwork" | "details" | "reconciling";
 export type Platform = "windows" | "mac" | "linux";
 export type GameStatus =
@@ -133,7 +135,7 @@ export interface GameSummary {
   /** The user's own gog.com tags on the game, sorted. */
   tags: string[];
   owned: boolean;
-  /** Chosen for download; only meaningful when download_mode is "selected". */
+  /** Chosen for download; only meaningful when the download mode selects games. */
   selected: boolean;
   status: GameStatus;
   files_total: number;

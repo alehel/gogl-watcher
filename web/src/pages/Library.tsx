@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { getGames, type GameSort, type GameStatus, type GameSummary } from "../api";
+import { getGames, selectsGames, type GameSort, type GameStatus, type GameSummary } from "../api";
 import { ApiErrorNotice, CoverImage, EmptyState, Loading, TimeAgo } from "../components/Common";
 import { DataTable } from "../components/DataTable";
 import { ProgressBar } from "../components/ProgressBar";
@@ -82,7 +82,7 @@ export function LibraryPage() {
   });
 
   const totals = status?.library;
-  const selectedOnly = totals?.download_mode === "selected";
+  const selectedOnly = selectsGames(totals?.download_mode);
   const counts: Partial<Record<GameStatus, number>> = totals
     ? {
         complete: totals.complete,

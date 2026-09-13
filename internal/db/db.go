@@ -217,8 +217,9 @@ func (d *DB) SetKV(ctx context.Context, key, value string) error {
 
 // Download modes: which games of the library are downloaded.
 const (
-	DownloadAll      = "all"      // every owned game
-	DownloadSelected = "selected" // only games the user selected
+	DownloadAll         = "all"          // every owned game
+	DownloadSelected    = "selected"     // only games the user selected
+	DownloadSelectedNew = "selected_new" // selected games, and games bought from now on are selected as they appear
 )
 
 // Platforms are the installer platforms the application knows, in the order the
@@ -315,9 +316,9 @@ func (s *Settings) Normalize() error {
 	}
 	s.DownloadMode = strings.ToLower(strings.TrimSpace(s.DownloadMode))
 	switch s.DownloadMode {
-	case "", DownloadAll, DownloadSelected:
+	case "", DownloadAll, DownloadSelected, DownloadSelectedNew:
 	default:
-		return fmt.Errorf("download_mode must be %q or %q", DownloadAll, DownloadSelected)
+		return fmt.Errorf("download_mode must be %q, %q or %q", DownloadAll, DownloadSelected, DownloadSelectedNew)
 	}
 	return nil
 }
@@ -348,9 +349,16 @@ func (s Settings) SamePlan(o Settings) bool {
 		s.LanguageFallback == o.LanguageFallback && s.IncludeDLC == o.IncludeDLC && s.IncludeExtras == o.IncludeExtras
 }
 
-// SelectedOnly reports whether only explicitly selected games are downloaded.
+// SelectedOnly reports whether only selected games are downloaded (whether the
+// user selects them all, or new games select themselves).
 func (s Settings) SelectedOnly() bool {
-	return s.DownloadMode == DownloadSelected
+	return s.DownloadMode == DownloadSelected || s.DownloadMode == DownloadSelectedNew
+}
+
+// SelectsNewGames reports whether a game that newly appears in the library is
+// selected for download as it does.
+func (s Settings) SelectsNewGames() bool {
+	return s.DownloadMode == DownloadSelectedNew
 }
 
 // WantsGame reports whether a game's files should be downloaded under these settings.
@@ -609,6 +617,24 @@ func (d *DB) ListTags(ctx context.Context) ([]Tag, error) {
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// GameIDs returns the id of every game ever listed, owned or not.
+func (d *DB) GameIDs(ctx context.Context) (map[int64]bool, error) {
+	rows, err := d.QueryContext(ctx, `SELECT id FROM games`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
 }
 
 // FolderTaken reports whether another game already uses folder.

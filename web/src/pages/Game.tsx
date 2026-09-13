@@ -11,6 +11,7 @@ import {
   type OfferItem,
   type OfferProduct,
   type Product,
+  selectsGames,
 } from "../api";
 import { ApiErrorNotice, CoverImage, EmptyState, Loading, Spinner, TimeAgo } from "../components/Common";
 import { DataTable } from "../components/DataTable";
@@ -42,7 +43,7 @@ export function GamePage() {
     game.refresh();
     refreshStatus();
   });
-  const selectedOnly = status?.library.download_mode === "selected";
+  const selectedOnly = selectsGames(status?.library.download_mode);
 
   const back = (
     <Link to="/library" className="back">

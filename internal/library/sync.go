@@ -280,6 +280,14 @@ func (s *Syncer) syncAll(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listing games: %w", err)
 	}
+	// Games seen for the first time are selected when the settings say so, but
+	// not on the first listing of a library: "new" means bought after the mode
+	// was chosen, not everything the user already owned.
+	known, err := s.db.GameIDs(ctx)
+	if err != nil {
+		return err
+	}
+	selectNew := settings.SelectsNewGames() && len(known) > 0
 	ids := make([]int64, 0, len(games))
 	for _, g := range games {
 		folder, err := s.folderFor(ctx, g)
@@ -289,6 +297,12 @@ func (s *Syncer) syncAll(ctx context.Context) error {
 		if err := s.db.UpsertGame(ctx, db.Game{ID: g.ID, Title: g.Title, Slug: g.Slug, Image: g.Image, Folder: folder,
 			WorksWindows: g.WorksWindows, WorksMac: g.WorksMac, WorksLinux: g.WorksLinux, Tags: g.Tags}); err != nil {
 			return err
+		}
+		if selectNew && !known[g.ID] {
+			if err := s.db.SetGamesSelected(ctx, []int64{g.ID}, true); err != nil {
+				return err
+			}
+			s.log.Info("new game selected for download", "game", g.Title)
 		}
 		ids = append(ids, g.ID)
 	}
