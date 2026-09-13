@@ -97,6 +97,9 @@ export function LibraryPage() {
   const visibleStatuses = selectedOnly ? STATUSES : STATUSES.filter((s) => s !== "unselected");
 
   const list = games.data?.games ?? [];
+  // With "downloaded first" the two groups are set apart, so the eye finds the
+  // boundary without reading the file counts.
+  const groups = downloadedFirst ? splitDownloaded(list) : [list];
   const nothingSelected = selectedOnly && !!totals && totals.games > 0 && totals.unselected === totals.games;
 
   let body: ReactNode;
@@ -111,9 +114,9 @@ export function LibraryPage() {
       </EmptyState>
     );
   } else if (view === "grid") {
-    body = (
+    const grid = (games: GameSummary[]) => (
       <div className="lib-grid">
-        {list.map((g) => (
+        {games.map((g) => (
           <GridItem
             key={g.id}
             game={g}
@@ -124,10 +127,19 @@ export function LibraryPage() {
         ))}
       </div>
     );
+    body =
+      groups.length === 1
+        ? grid(list)
+        : groups.map((games, i) => (
+            <div key={i}>
+              {i > 0 && <GroupDivider />}
+              {grid(games)}
+            </div>
+          ));
   } else {
     body = (
       <GamesTable
-        games={list}
+        groups={groups}
         selectable={selectedOnly}
         busy={selection.busy}
         onSelect={(ids, on) => void selection.setSelection(ids, on)}
@@ -202,17 +214,36 @@ export function LibraryPage() {
   );
 }
 
+/** Same criterion as the server's "downloaded first": any wanted file on disk. */
+const hasDownload = (g: GameSummary) => g.files_done > 0;
+
+/** Splits into [downloaded, not downloaded], leaving out an empty group. */
+function splitDownloaded(games: GameSummary[]): GameSummary[][] {
+  const done = games.filter(hasDownload);
+  const rest = games.filter((g) => !hasDownload(g));
+  return [done, rest].filter((g) => g.length > 0);
+}
+
+function GroupDivider() {
+  return (
+    <div className="group-divider" role="separator">
+      Not downloaded
+    </div>
+  );
+}
+
 function GamesTable({
-  games,
+  groups,
   selectable,
   busy,
   onSelect,
 }: {
-  games: GameSummary[];
+  groups: GameSummary[][];
   selectable: boolean;
   busy: boolean;
   onSelect: (ids: number[], selected: boolean) => void;
 }) {
+  const games = groups.flat();
   const selectedCount = games.filter((g) => g.selected).length;
   const allSelected = games.length > 0 && selectedCount === games.length;
   const toggleAll = () => {
@@ -253,44 +284,51 @@ function GamesTable({
           <th>Synced</th>
         </tr>
       </thead>
-      <tbody>
-        {games.map((g) => (
-          <tr key={g.id} className={selectable && !g.selected ? "dim" : ""}>
-            {selectable && (
-              <td className="select-cell">
-                <SelectBox
-                  checked={g.selected}
-                  disabled={busy}
-                  onChange={(on) => onSelect([g.id], on)}
-                  label={`Download ${g.title}`}
-                />
+      {groups.map((group, gi) => (
+        <tbody key={gi} className={gi > 0 ? "group" : undefined}>
+          {gi > 0 && (
+            <tr className="group-row" role="separator">
+              <td colSpan={selectable ? 9 : 8}>Not downloaded</td>
+            </tr>
+          )}
+          {group.map((g) => (
+            <tr key={g.id} className={selectable && !g.selected ? "dim" : ""}>
+              {selectable && (
+                <td className="select-cell">
+                  <SelectBox
+                    checked={g.selected}
+                    disabled={busy}
+                    onChange={(on) => onSelect([g.id], on)}
+                    label={`Download ${g.title}`}
+                  />
+                </td>
+              )}
+              <td className="thumb-cell">
+                <div className="thumb">
+                  <CoverImage src={g.image} lazy />
+                </div>
               </td>
-            )}
-            <td className="thumb-cell">
-              <div className="thumb">
-                <CoverImage src={g.image} lazy />
-              </div>
-            </td>
-            <td className="wrap">
-              <Link to={`/library/${g.id}`}>{g.title}</Link>
-            </td>
-            <td className="faint">{platformsText(g.works_on) || "—"}</td>
-            <td className="num">
-              {g.files_done} / {g.files_total}
-            </td>
-            <td className="num">{formatBytes(g.bytes_total)}</td>
-            <td>
-              <GameStatusDot status={g.status} />
-            </td>
-            <td>
-              {inProgress(g) ? <ProgressBar value={g.progress} showPercent tone={gameStatusTone(g.status)} /> : null}
-            </td>
-            <td className="muted">
-              <TimeAgo iso={g.last_synced_at} />
-            </td>
-          </tr>
-        ))}
-      </tbody>
+              <td className="wrap">
+                <Link to={`/library/${g.id}`}>{g.title}</Link>
+              </td>
+              <td className="faint">{platformsText(g.works_on) || "—"}</td>
+              <td className="num">
+                {g.files_done} / {g.files_total}
+              </td>
+              <td className="num">{formatBytes(g.bytes_total)}</td>
+              <td>
+                <GameStatusDot status={g.status} />
+              </td>
+              <td>
+                {inProgress(g) ? <ProgressBar value={g.progress} showPercent tone={gameStatusTone(g.status)} /> : null}
+              </td>
+              <td className="muted">
+                <TimeAgo iso={g.last_synced_at} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      ))}
     </DataTable>
   );
 }
