@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { getGames, type GameSort, type GameStatus, type GameSummary } from "../api";
+import { getGames, selectsGames, type GameSort, type GameStatus, type GameSummary } from "../api";
 import { ApiErrorNotice, CoverImage, EmptyState, Loading, TimeAgo } from "../components/Common";
 import { DataTable } from "../components/DataTable";
 import { ProgressBar } from "../components/ProgressBar";
@@ -64,15 +64,17 @@ export function LibraryPage() {
   const { status, refresh: refreshStatus } = useStatus();
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<GameStatus | "">("");
+  const [tag, setTag] = useState("");
   const [sort, setSort] = useState<GameSort>("title");
   const [downloadedFirst, setDownloadedFirst] = useLocalStorage(DOWNLOADED_FIRST_KEY, false);
   const [view, setView] = useLocalStorage<View>(VIEW_KEY, "table");
   const dq = useDebounced(q.trim(), 250);
 
   const games = usePolling(
-    () => getGames({ q: dq, status: filter, sort, downloaded_first: downloadedFirst || undefined }),
+    () =>
+      getGames({ q: dq, status: filter, tag: tag || undefined, sort, downloaded_first: downloadedFirst || undefined }),
     5000,
-    [dq, filter, sort, downloadedFirst],
+    [dq, filter, tag, sort, downloadedFirst],
   );
   const selection = useGameSelection(() => {
     games.refresh();
@@ -80,7 +82,7 @@ export function LibraryPage() {
   });
 
   const totals = status?.library;
-  const selectedOnly = totals?.download_mode === "selected";
+  const selectedOnly = selectsGames(totals?.download_mode);
   const counts: Partial<Record<GameStatus, number>> = totals
     ? {
         complete: totals.complete,
@@ -97,6 +99,10 @@ export function LibraryPage() {
   const visibleStatuses = selectedOnly ? STATUSES : STATUSES.filter((s) => s !== "unselected");
 
   const list = games.data?.games ?? [];
+  const tags = games.data?.tags ?? [];
+  // With "downloaded first" the two groups are set apart, so the eye finds the
+  // boundary without reading the file counts.
+  const groups = downloadedFirst ? splitDownloaded(list) : [list];
   const nothingSelected = selectedOnly && !!totals && totals.games > 0 && totals.unselected === totals.games;
 
   let body: ReactNode;
@@ -105,15 +111,15 @@ export function LibraryPage() {
   } else if (list.length === 0) {
     body = (
       <EmptyState>
-        {dq || filter
+        {dq || filter || tag
           ? "No games match this search or filter."
           : "Your GOG library shows up here after the first sync finishes."}
       </EmptyState>
     );
   } else if (view === "grid") {
-    body = (
+    const grid = (games: GameSummary[]) => (
       <div className="lib-grid">
-        {list.map((g) => (
+        {games.map((g) => (
           <GridItem
             key={g.id}
             game={g}
@@ -124,10 +130,19 @@ export function LibraryPage() {
         ))}
       </div>
     );
+    body =
+      groups.length === 1
+        ? grid(list)
+        : groups.map((games, i) => (
+            <div key={i}>
+              {i > 0 && <GroupDivider />}
+              {grid(games)}
+            </div>
+          ));
   } else {
     body = (
       <GamesTable
-        games={list}
+        groups={groups}
         selectable={selectedOnly}
         busy={selection.busy}
         onSelect={(ids, on) => void selection.setSelection(ids, on)}
@@ -164,6 +179,17 @@ export function LibraryPage() {
             </option>
           ))}
         </select>
+        {/* The user's gog.com tags; the filter only shows up once there are some. */}
+        {(tags.length > 0 || tag) && (
+          <select className="select" value={tag} onChange={(e) => setTag(e.target.value)} aria-label="Filter by tag">
+            <option value="">Any tag</option>
+            {tags.map((t) => (
+              <option key={t.name} value={t.name}>
+                {withCount(t.name, t.count)}
+              </option>
+            ))}
+          </select>
+        )}
         <select className="select" value={sort} onChange={(e) => setSort(e.target.value as GameSort)} aria-label="Sort">
           <option value="title">Sort: Title</option>
           <option value="status">Sort: Status</option>
@@ -202,17 +228,50 @@ export function LibraryPage() {
   );
 }
 
+/** The user's gog.com tags of a game, as small chips; nothing when it has none. */
+export function TagList({ tags }: { tags: string[] }) {
+  if (tags.length === 0) return null;
+  return (
+    <span className="tags">
+      {tags.map((t) => (
+        <span key={t} className="tag">
+          {t}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** Same criterion as the server's "downloaded first": any wanted file on disk. */
+const hasDownload = (g: GameSummary) => g.files_done > 0;
+
+/** Splits into [downloaded, not downloaded], leaving out an empty group. */
+function splitDownloaded(games: GameSummary[]): GameSummary[][] {
+  const done = games.filter(hasDownload);
+  const rest = games.filter((g) => !hasDownload(g));
+  return [done, rest].filter((g) => g.length > 0);
+}
+
+function GroupDivider() {
+  return (
+    <div className="group-divider" role="separator">
+      Not downloaded
+    </div>
+  );
+}
+
 function GamesTable({
-  games,
+  groups,
   selectable,
   busy,
   onSelect,
 }: {
-  games: GameSummary[];
+  groups: GameSummary[][];
   selectable: boolean;
   busy: boolean;
   onSelect: (ids: number[], selected: boolean) => void;
 }) {
+  const games = groups.flat();
   const selectedCount = games.filter((g) => g.selected).length;
   const allSelected = games.length > 0 && selectedCount === games.length;
   const toggleAll = () => {
@@ -253,44 +312,52 @@ function GamesTable({
           <th>Synced</th>
         </tr>
       </thead>
-      <tbody>
-        {games.map((g) => (
-          <tr key={g.id} className={selectable && !g.selected ? "dim" : ""}>
-            {selectable && (
-              <td className="select-cell">
-                <SelectBox
-                  checked={g.selected}
-                  disabled={busy}
-                  onChange={(on) => onSelect([g.id], on)}
-                  label={`Download ${g.title}`}
-                />
+      {groups.map((group, gi) => (
+        <tbody key={gi} className={gi > 0 ? "group" : undefined}>
+          {gi > 0 && (
+            <tr className="group-row" role="separator">
+              <td colSpan={selectable ? 9 : 8}>Not downloaded</td>
+            </tr>
+          )}
+          {group.map((g) => (
+            <tr key={g.id} className={selectable && !g.selected ? "dim" : ""}>
+              {selectable && (
+                <td className="select-cell">
+                  <SelectBox
+                    checked={g.selected}
+                    disabled={busy}
+                    onChange={(on) => onSelect([g.id], on)}
+                    label={`Download ${g.title}`}
+                  />
+                </td>
+              )}
+              <td className="thumb-cell">
+                <div className="thumb">
+                  <CoverImage src={g.image} lazy />
+                </div>
               </td>
-            )}
-            <td className="thumb-cell">
-              <div className="thumb">
-                <CoverImage src={g.image} lazy />
-              </div>
-            </td>
-            <td className="wrap">
-              <Link to={`/library/${g.id}`}>{g.title}</Link>
-            </td>
-            <td className="faint">{platformsText(g.works_on) || "—"}</td>
-            <td className="num">
-              {g.files_done} / {g.files_total}
-            </td>
-            <td className="num">{formatBytes(g.bytes_total)}</td>
-            <td>
-              <GameStatusDot status={g.status} />
-            </td>
-            <td>
-              {inProgress(g) ? <ProgressBar value={g.progress} showPercent tone={gameStatusTone(g.status)} /> : null}
-            </td>
-            <td className="muted">
-              <TimeAgo iso={g.last_synced_at} />
-            </td>
-          </tr>
-        ))}
-      </tbody>
+              <td className="wrap">
+                <Link to={`/library/${g.id}`}>{g.title}</Link>
+                <TagList tags={g.tags} />
+              </td>
+              <td className="faint">{platformsText(g.works_on) || "—"}</td>
+              <td className="num">
+                {g.files_done} / {g.files_total}
+              </td>
+              <td className="num">{formatBytes(g.bytes_total)}</td>
+              <td>
+                <GameStatusDot status={g.status} />
+              </td>
+              <td>
+                {inProgress(g) ? <ProgressBar value={g.progress} showPercent tone={gameStatusTone(g.status)} /> : null}
+              </td>
+              <td className="muted">
+                <TimeAgo iso={g.last_synced_at} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      ))}
     </DataTable>
   );
 }

@@ -28,6 +28,9 @@ type API interface {
 	ListGames(ctx context.Context, progress func(page, total int)) ([]ListedGame, error)
 	// ProductDetails returns downloads for a game and its DLC.
 	ProductDetails(ctx context.Context, id int64) (*Product, error)
+	// BoxArt returns the URL of the portrait cover of a game, or "" when GOG
+	// has none. The game list only carries the landscape store tile.
+	BoxArt(ctx context.Context, id int64) (string, error)
 	// LatestBuild returns the newest public Galaxy build of a product for one OS,
 	// or nil when GOG publishes none (common for Linux builds and for games that
 	// predate Galaxy). It is a change hint only; see library.Syncer.

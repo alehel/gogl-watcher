@@ -35,7 +35,8 @@ with an appropriate 4xx/5xx status. Timestamps are RFC 3339 strings or `null`.
   "library": {
     "games": 0, "complete": 0, "pending": 0, "downloading": 0,
     "partial": 0, "error": 0, "unavailable": 0, "unsynced": 0, "unselected": 0,
-    "download_mode": "all",         // "all" | "selected" (see settings)
+    "download_mode": "all",         // "all" | "selected" | "selected_new" (see settings)
+    "include_dlc": true, "include_extras": false,  // the library-wide settings; a game can opt in on its own
     "bytes_total": 0, "bytes_done": 0
   },
   "disk": { "library_dir": "/library", "free_bytes": 0, "total_bytes": 0 }
@@ -78,7 +79,9 @@ Triggers the first library sync.
 
 ```json
 {
-  "download_mode": "all",                // "all" | "selected"; empty until the setup wizard asked
+  "download_mode": "all",                // "all" | "selected" | "selected_new"; empty until the setup wizard asked.
+                                         // "selected_new" is "selected" plus: a game that appears in the
+                                         // library after its first listing is selected as it does.
   "platforms": ["windows"],              // any of "windows" | "mac" | "linux"; empty until chosen
   "languages": ["en"],                   // GOG language codes, e.g. "en", "de", "fr"
   "language_fallback": true,             // download another language if none of the chosen exist
@@ -108,8 +111,8 @@ wanted if these settings were applied:
 }
 ```
 
-`unselected` appears when switching to `download_mode: "selected"` would drop files of games
-that are not selected.
+`unselected` appears when switching to `download_mode: "selected"` (or `"selected_new"`) would
+drop files of games that are not selected.
 
 ### `PUT /api/settings`
 Body `{ "settings": {...}, "on_removed": "keep" | "delete" | null }`.
@@ -123,21 +126,26 @@ Language codes available for the picker: `GET /api/settings/languages` →
 
 ## Library
 
-### `GET /api/games?q=&status=&sort=&downloaded_first=`
-`status` filter: one of the game statuses below; `sort`: `title` (default) | `status` | `updated`.
+### `GET /api/games?q=&status=&tag=&sort=&downloaded_first=`
+`status` filter: one of the game statuses below; `tag`: only games carrying this gog.com tag;
+`sort`: `title` (default) | `status` | `updated`.
 `downloaded_first=1` lists the games that already have files on disk (`files_done > 0`) before
-the rest; `sort` then orders each of the two groups.
+the rest; `sort` then orders each of the two groups. `tags` lists the user's own gog.com tags
+that are in use on an owned game, with counts, whatever the filter.
 
 ```json
-{ "games": [ {
+{ "tags": [ { "name": "Favorite", "count": 12 } ],
+  "games": [ {
   "id": 1207658924,
   "title": "The Witcher",
   "slug": "the_witcher",
-  "image": "https://images.gog-statics.com/...jpg",
+  "image": "https://images.gog-statics.com/...jpg",   // portrait box art, or GOG's store tile when it has none
   "folder": "The Witcher",
   "works_on": { "windows": true, "mac": true, "linux": false },
+  "tags": ["Completed", "Favorite"],   // the user's own gog.com tags, sorted
   "owned": true,
   "selected": false,      // flagged for download; only matters when download_mode is "selected"
+  "include_dlc": false, "include_extras": true,  // the game's own opt-ins; matter when the library-wide setting is off
   "status": "complete",   // "complete" | "downloading" | "pending" | "partial" | "error" | "unavailable" | "unsynced" | "unselected"
   "files_total": 3, "files_done": 3,
   "bytes_total": 1234, "bytes_done": 1234,
@@ -146,7 +154,7 @@ the rest; `sort` then orders each of the two groups.
 } ] }
 ```
 
-Status meaning: `unselected` – download mode is `selected` and the game is not selected, so
+Status meaning: `unselected` – download mode is `selected` or `selected_new` and the game is not selected, so
 nothing is fetched for it; `unsynced` – details not fetched yet; `unavailable` – GOG offers no files
 matching the chosen platforms/languages; `pending` – wanted files not yet downloaded;
 `downloading` – at least one file currently transferring; `partial` – some done, some
@@ -186,7 +194,31 @@ background and queues their files; deselecting drops their tracked files exactly
 change does: with downloaded files present and `on_removed` null → 409
 `{ "error": "confirmation_required", "removed": {...}, "reasons": ["unselected"] }`, otherwise
 200 `{ "ok": true, "selected": true, "ids": [...] }`. Unknown ids → 404. The flag is stored in
-either download mode but only has an effect in `selected`.
+any download mode but only has an effect in `selected` and `selected_new`.
+
+### `PUT /api/games/{id}/options`
+Body `{ "include_dlc": false, "include_extras": true, "on_removed": "keep" | "delete" | null }`.
+Opts one game in to (or out of) DLC and extras regardless of the library-wide settings; the
+setting that is on for the library wins either way. Opting in syncs the game right away so the
+files get planned; opting out drops the files no longer wanted like a settings change does (409
+`confirmation_required` with downloaded files present and `on_removed` null).
+200 `{ "ok": true, "include_dlc": false, "include_extras": true }`. Unknown id → 404.
+
+### `GET /api/games/{id}/offer`
+What GOG offers for the game right now, without planning any of it: every installer and extra of
+the game and its owned DLC, with `wanted` on the ones the current settings (and the game's own
+opt-ins) would download. Meant for the page of a game that is not selected. Served from a
+ten-minute cache; 502 when GOG cannot be reached.
+
+```json
+{ "fetched_at": "...", "wanted_files": 3, "wanted_bytes": 88000000,
+  "products": [ { "id": 1207658924, "title": "The Witcher", "is_dlc": false, "items": [
+    { "kind": "installer", "os": "windows", "language": "en", "name": "The Witcher", "version": "1.5",
+      "size": 88000000, "files": 3, "wanted": true },
+    { "kind": "extra", "os": "", "language": "", "name": "Soundtrack", "type": "soundtrack",
+      "version": "", "size": 12000000, "files": 1, "wanted": false }
+  ] } ] }
+```
 
 ### `POST /api/games/{id}/sync` – refresh this game's details from GOG now. `{ "ok": true }`.
 ### `POST /api/games/{id}/retry` – reset this game's failed files to pending. `{ "ok": true }`.

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -432,5 +433,151 @@ func TestCheckMissingRefusesUnavailableLibrary(t *testing.T) {
 	}
 	if got, _ := d.GetFile(ctx, res.ID); got.Status != db.StatusPending {
 		t.Errorf("vanished file should be pending: %+v", got)
+	}
+}
+
+// boxArtAPI answers box art lookups from a table and counts them.
+type boxArtAPI struct {
+	*gog.Mock
+	art   map[int64]string
+	calls atomic.Int64
+}
+
+func (b *boxArtAPI) BoxArt(ctx context.Context, id int64) (string, error) {
+	b.calls.Add(1)
+	return b.art[id], nil
+}
+
+// The game list only carries the landscape tile; the portrait cover is fetched
+// once per game (for unselected games too, since the library page shows them)
+// and used in place of the tile when GOG has one.
+func TestSyncFetchesBoxArtOnce(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	games, _ := m.ListGames(context.Background(), nil)
+	withArt, without := games[0], games[1]
+	api := &boxArtAPI{Mock: m, art: map[int64]string{withArt.ID: "https://images.gog-statics.com/cover.jpg"}}
+	d, syncer, _ := newSyncTest(t, api)
+	s := saveSettings(t, d, "windows")
+	s.DownloadMode = db.DownloadSelected
+	_ = d.SaveSettings(context.Background(), s)
+
+	if err := syncer.SyncAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := d.GetGame(context.Background(), withArt.ID)
+	if g.Cover() != "https://images.gog-statics.com/cover.jpg" {
+		t.Errorf("cover = %q, want the box art", g.Cover())
+	}
+	g, _ = d.GetGame(context.Background(), without.ID)
+	if g.Cover() != without.Image {
+		t.Errorf("cover = %q, want the listing tile as fallback", g.Cover())
+	}
+	if g.BoxArtCheckedAt == nil {
+		t.Error("a game without box art must record that it was asked")
+	}
+	if int(api.calls.Load()) != len(games) {
+		t.Errorf("box art asked %d times, want once per game (%d)", api.calls.Load(), len(games))
+	}
+
+	api.calls.Store(0)
+	if err := syncer.SyncAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if api.calls.Load() != 0 {
+		t.Errorf("second sync asked for box art %d times, want 0", api.calls.Load())
+	}
+}
+
+// In the "selected and new" mode a game that appears in the library after the
+// first listing is selected on its own; the games of the first listing are not,
+// since "new" means bought after the mode was chosen.
+func TestSelectedNewModeSelectsGamesThatAppearLater(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	extra := m.Games[len(m.Games)-1]
+	m.Games = m.Games[:len(m.Games)-1]
+	d, syncer, _ := newSyncTest(t, m)
+	s := saveSettings(t, d, "windows")
+	s.DownloadMode = db.DownloadSelectedNew
+	_ = d.SaveSettings(context.Background(), s)
+
+	if err := syncer.SyncAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	games, _ := d.ListGames(context.Background())
+	for _, g := range games {
+		if g.Selected {
+			t.Fatalf("%q selected by the first listing", g.Title)
+		}
+	}
+
+	m.Games = append(m.Games, extra)
+	if err := syncer.SyncAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := d.GetGame(context.Background(), extra.Listed.ID)
+	if g == nil || !g.Selected {
+		t.Fatalf("game that appeared later is not selected: %+v", g)
+	}
+	games, _ = d.ListGames(context.Background())
+	for _, og := range games {
+		if og.ID != extra.Listed.ID && og.Selected {
+			t.Errorf("%q selected although it was there before", og.Title)
+		}
+	}
+}
+
+// A game can opt in to extras (and DLC) on its own while the settings leave them
+// out for the library; opting out again drops the files it no longer wants.
+func TestGameOptsIntoExtrasOnItsOwn(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	d, syncer, _ := newSyncTest(t, m)
+	s := saveSettings(t, d, "windows")
+	s.IncludeExtras = false
+	_ = d.SaveSettings(context.Background(), s)
+	const witcher = 1207658924
+	ctx := context.Background()
+
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	extras := func() int {
+		files, _ := d.ListActiveFilesByGame(ctx, witcher)
+		n := 0
+		for _, f := range files {
+			if f.Kind == "extra" {
+				n++
+			}
+		}
+		return n
+	}
+	if n := extras(); n != 0 {
+		t.Fatalf("%d extras planned although extras are off", n)
+	}
+
+	if err := syncer.SetGameOptions(ctx, witcher, false, true, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.SyncGame(ctx, witcher); err != nil {
+		t.Fatal(err)
+	}
+	if n := extras(); n == 0 {
+		t.Fatal("no extras planned after the game opted in")
+	}
+	// Turning extras off for the library leaves an opted-in game alone.
+	if err := syncer.ApplySettings(ctx, s, ""); err != nil {
+		t.Fatal(err)
+	}
+	if n := extras(); n == 0 {
+		t.Fatal("re-applying the library settings dropped the game's own extras")
+	}
+
+	if err := syncer.SetGameOptions(ctx, witcher, false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if n := extras(); n != 0 {
+		t.Fatalf("%d extras still tracked after the game opted out", n)
 	}
 }

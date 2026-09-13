@@ -11,6 +11,7 @@ import {
   type OnRemoved,
   type Settings,
   type SettingsPreview,
+  selectsGames,
 } from "../api";
 import { ApiErrorNotice, Checkbox, Loading, Spinner } from "../components/Common";
 import {
@@ -22,6 +23,7 @@ import {
   RemovalConfirmModal,
 } from "../components/SettingsFields";
 import { useStatus } from "../components/StatusContext";
+import { UnsavedChangesGuard } from "../components/UnsavedChanges";
 import { useToast, useToastAction } from "../components/Toast";
 import { kbpsToMbps, mbpsToKbps } from "../format";
 import { useAsync } from "../hooks";
@@ -161,11 +163,12 @@ function SettingsForm({
 
   return (
     <>
+      <UnsavedChangesGuard when={dirty && !busy} />
       <div>
         <section className="form-section">
           <h2>Games</h2>
           <DownloadModePicker value={form.download_mode} onChange={(v) => set("download_mode", v)} disabled={busy} />
-          {form.download_mode === "selected" && (
+          {selectsGames(form.download_mode) && (
             <span className="hint">
               Pick games in the <Link to="/library">library</Link>. Switching to this mode keeps only selected games;
               you will be asked what to do with files of games that are not selected.

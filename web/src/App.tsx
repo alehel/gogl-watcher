@@ -1,5 +1,12 @@
 import type { ReactNode } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import {
+  createBrowserRouter,
+  createRoutesFromElements,
+  Navigate,
+  Route,
+  RouterProvider,
+  useLocation,
+} from "react-router-dom";
 import { errorMessage, NetworkError } from "./api";
 import { Loading } from "./components/Common";
 import { Layout } from "./components/Layout";
@@ -52,38 +59,45 @@ function Gate({ children, wizard }: { children: ReactNode; wizard: boolean }) {
   return <>{children}</>;
 }
 
+// A data router (rather than <BrowserRouter>) so a page with unsaved edits can
+// hold up navigation; see UnsavedChangesGuard.
+const router = createBrowserRouter(
+  createRoutesFromElements(
+    <>
+      <Route
+        path="/setup"
+        element={
+          <Gate wizard>
+            <SetupPage />
+          </Gate>
+        }
+      />
+      <Route
+        element={
+          <Gate wizard={false}>
+            <Layout />
+          </Gate>
+        }
+      >
+        <Route index element={<DashboardPage />} />
+        <Route path="/library" element={<LibraryPage />} />
+        <Route path="/library/:id" element={<GamePage />} />
+        <Route path="/downloads" element={<DownloadsPage />} />
+        <Route path="/logs" element={<LogsPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/auth" element={<AuthPage />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Route>
+    </>,
+  ),
+  { future: { v7_relativeSplatPath: true } },
+);
+
 export default function App() {
   return (
     <ToastProvider>
       <StatusProvider>
-        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-          <Routes>
-            <Route
-              path="/setup"
-              element={
-                <Gate wizard>
-                  <SetupPage />
-                </Gate>
-              }
-            />
-            <Route
-              element={
-                <Gate wizard={false}>
-                  <Layout />
-                </Gate>
-              }
-            >
-              <Route index element={<DashboardPage />} />
-              <Route path="/library" element={<LibraryPage />} />
-              <Route path="/library/:id" element={<GamePage />} />
-              <Route path="/downloads" element={<DownloadsPage />} />
-              <Route path="/logs" element={<LogsPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-              <Route path="/auth" element={<AuthPage />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Route>
-          </Routes>
-        </BrowserRouter>
+        <RouterProvider router={router} future={{ v7_startTransition: true }} />
       </StatusProvider>
     </ToastProvider>
   );

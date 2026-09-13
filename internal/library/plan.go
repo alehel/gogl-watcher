@@ -19,6 +19,7 @@ type PlannedProduct struct {
 // Plan computes which files of a product (and its owned DLC) should exist locally
 // under the given settings. owned may be nil, in which case all DLC count as owned.
 func Plan(game db.Game, p *gog.Product, owned gog.OwnedSet, s db.Settings) []PlannedProduct {
+	s = s.ForGame(game)
 	var out []PlannedProduct
 	base := PlannedProduct{Product: db.Product{ID: p.ID, GameID: game.ID, Title: cmp.Or(p.Title, game.Title), IsDLC: false}}
 	base.Files = planFiles(game.ID, p.ID, p.Downloads, "", s)
@@ -64,13 +65,9 @@ func planFiles(gameID, productID int64, dl gog.Downloads, dlcFolder string, s db
 				dir = filepath.ToSlash(filepath.Join(dir, SanitizeFolder(lang)))
 			}
 			for i, f := range inst.Files {
-				id := string(f.ID)
-				if id == "" {
-					id = fmt.Sprintf("%s_%d", inst.ID, i)
-				}
 				files = append(files, db.File{
 					GameID: gameID, ProductID: productID, Kind: "installer", OS: os, Language: lang,
-					GogID: id, Name: inst.Name, Version: inst.Version, Size: int64(f.Size), Downlink: f.Downlink,
+					GogID: fileID(string(f.ID), inst.ID, i), Name: inst.Name, Version: inst.Version, Size: int64(f.Size), Downlink: f.Downlink,
 					RelDir: dir,
 				})
 			}
@@ -79,19 +76,24 @@ func planFiles(gameID, productID int64, dl gog.Downloads, dlcFolder string, s db
 	if s.IncludeExtras {
 		for _, b := range dl.BonusContent {
 			for i, f := range b.Files {
-				id := string(f.ID)
-				if id == "" {
-					id = fmt.Sprintf("%s_%d", string(b.ID), i)
-				}
 				files = append(files, db.File{
 					GameID: gameID, ProductID: productID, Kind: "extra", OS: "", Language: "",
-					GogID: id, Name: b.Name, Version: "", Size: int64(f.Size), Downlink: f.Downlink,
+					GogID: fileID(string(f.ID), string(b.ID), i), Name: b.Name, Version: "", Size: int64(f.Size), Downlink: f.Downlink,
 					RelDir: RelDir("extra", "", dlcFolder),
 				})
 			}
 		}
 	}
 	return files
+}
+
+// fileID is the stable id of the i-th file of an installer or extra: GOG's own
+// when it has one, else derived from the parent's id.
+func fileID(id, parent string, i int) string {
+	if id == "" {
+		return fmt.Sprintf("%s_%d", parent, i)
+	}
+	return id
 }
 
 // chooseLanguages picks the installers to download for one OS.

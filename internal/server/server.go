@@ -15,7 +15,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/alehel/gogl-watcher/internal/db"
@@ -59,6 +58,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/games", s.handleGames)
 	mux.HandleFunc("PUT /api/games/selection", s.handleGamesSelection)
 	mux.HandleFunc("GET /api/games/{id}", s.handleGame)
+	mux.HandleFunc("GET /api/games/{id}/offer", s.handleGameOffer)
+	mux.HandleFunc("PUT /api/games/{id}/options", s.handleGameOptions)
 	mux.HandleFunc("POST /api/games/{id}/sync", s.handleGameSync)
 	mux.HandleFunc("POST /api/games/{id}/retry", s.handleGameRetry)
 	mux.HandleFunc("POST /api/files/{id}/retry", s.handleFileRetry)
@@ -163,31 +164,39 @@ func (s *Server) setupStep(ctx context.Context) (string, bool, db.Settings) {
 // ---- status ----
 
 type gameSummary struct {
-	ID           int64           `json:"id"`
-	Title        string          `json:"title"`
-	Slug         string          `json:"slug"`
-	Image        string          `json:"image"`
-	Folder       string          `json:"folder"`
-	WorksOn      map[string]bool `json:"works_on"`
-	Owned        bool            `json:"owned"`
-	Selected     bool            `json:"selected"`
-	Status       string          `json:"status"`
-	FilesTotal   int             `json:"files_total"`
-	FilesDone    int             `json:"files_done"`
-	BytesTotal   int64           `json:"bytes_total"`
-	BytesDone    int64           `json:"bytes_done"`
-	Progress     float64         `json:"progress"`
-	LastSyncedAt *time.Time      `json:"last_synced_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
-	DetailsError string          `json:"details_error,omitempty"`
+	ID       int64           `json:"id"`
+	Title    string          `json:"title"`
+	Slug     string          `json:"slug"`
+	Image    string          `json:"image"`
+	Folder   string          `json:"folder"`
+	WorksOn  map[string]bool `json:"works_on"`
+	Tags     []string        `json:"tags"`
+	Owned    bool            `json:"owned"`
+	Selected bool            `json:"selected"`
+	// IncludeDLC and IncludeExtras are the game's own opt-ins; they matter when
+	// the library-wide setting is off.
+	IncludeDLC    bool       `json:"include_dlc"`
+	IncludeExtras bool       `json:"include_extras"`
+	Status        string     `json:"status"`
+	FilesTotal    int        `json:"files_total"`
+	FilesDone     int        `json:"files_done"`
+	BytesTotal    int64      `json:"bytes_total"`
+	BytesDone     int64      `json:"bytes_done"`
+	Progress      float64    `json:"progress"`
+	LastSyncedAt  *time.Time `json:"last_synced_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	DetailsError  string     `json:"details_error,omitempty"`
 }
 
 func (s *Server) summarize(g db.Game, st db.GameStats, active map[int64][]downloader.Progress, settings db.Settings) gameSummary {
 	out := gameSummary{
-		ID: g.ID, Title: g.Title, Slug: g.Slug, Image: g.Image, Folder: g.Folder,
-		WorksOn: worksOn(g),
-		Owned:   g.Owned, Selected: g.Selected, FilesTotal: st.FilesTotal, FilesDone: st.FilesDone, BytesTotal: st.BytesTotal, BytesDone: st.BytesDone,
+		ID: g.ID, Title: g.Title, Slug: g.Slug, Image: g.Cover(), Folder: g.Folder,
+		WorksOn: worksOn(g), Tags: g.Tags,
+		Owned: g.Owned, Selected: g.Selected, IncludeDLC: g.IncludeDLC, IncludeExtras: g.IncludeExtras, FilesTotal: st.FilesTotal, FilesDone: st.FilesDone, BytesTotal: st.BytesTotal, BytesDone: st.BytesDone,
 		LastSyncedAt: g.DetailsSyncedAt, UpdatedAt: g.UpdatedAt, DetailsError: g.DetailsError,
+	}
+	if out.Tags == nil {
+		out.Tags = []string{} // a list, not null, for the UI
 	}
 	for _, p := range active[g.ID] {
 		out.BytesDone += p.Downloaded
@@ -283,6 +292,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		lib[k] = counts[k]
 	}
 	lib["download_mode"] = settings.DownloadMode
+	lib["include_dlc"] = settings.IncludeDLC
+	lib["include_extras"] = settings.IncludeExtras
 	lib["bytes_total"] = bytesTotal
 	lib["bytes_done"] = bytesDone
 
@@ -296,7 +307,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if queued < 0 {
 		queued = 0
 	}
-	free, total := diskUsage(s.LibraryDir)
+	free, total := library.DiskUsage(s.LibraryDir)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":        s.Version,
 		"setup_complete": complete,
@@ -311,14 +322,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"library": lib,
 		"disk":    map[string]any{"library_dir": s.LibraryDir, "free_bytes": free, "total_bytes": total},
 	})
-}
-
-func diskUsage(dir string) (free, total int64) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
-		return 0, 0
-	}
-	return int64(st.Bavail) * int64(st.Bsize), int64(st.Blocks) * int64(st.Bsize)
 }
 
 // ---- auth ----
@@ -477,6 +480,7 @@ func (s *Server) handleGames(w http.ResponseWriter, r *http.Request) {
 	}
 	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	status := r.URL.Query().Get("status")
+	tag := r.URL.Query().Get("tag")
 	filtered := sums[:0]
 	for _, g := range sums {
 		if q != "" && !strings.Contains(strings.ToLower(g.Title), q) {
@@ -485,10 +489,18 @@ func (s *Server) handleGames(w http.ResponseWriter, r *http.Request) {
 		if status != "" && status != "all" && g.Status != status {
 			continue
 		}
+		if tag != "" && !slices.Contains(g.Tags, tag) {
+			continue
+		}
 		filtered = append(filtered, g)
 	}
 	sortSummaries(filtered, r.URL.Query().Get("sort"), boolParam(r.URL.Query().Get("downloaded_first")))
-	writeJSON(w, http.StatusOK, map[string]any{"games": filtered})
+	tags, err := s.DB.ListTags(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"games": filtered, "tags": tags})
 }
 
 // sortSummaries orders the listing in place. The games arrive in title order, so "title"
@@ -678,6 +690,79 @@ func (s *Server) handleGamesSelection(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "selected": body.Selected, "ids": body.IDs})
+}
+
+// handleGameOptions opts a game in to or out of DLC and extras on its own. Opting
+// in syncs the game right away so the files get planned; opting out may need
+// the keep-or-delete answer for downloaded files (409, like a settings change).
+func (s *Server) handleGameOptions(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	var body struct {
+		IncludeDLC    bool                  `json:"include_dlc"`
+		IncludeExtras bool                  `json:"include_extras"`
+		OnRemoved     library.RemovalAction `json:"on_removed"`
+	}
+	if err := readJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+	before, err := s.DB.GetGame(ctx, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if before == nil {
+		writeError(w, http.StatusNotFound, "game not found")
+		return
+	}
+	if err := s.Syncer.SetGameOptions(ctx, id, body.IncludeDLC, body.IncludeExtras, body.OnRemoved); err != nil {
+		if !writeConfirmation(w, err) {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	settings, _ := s.DB.GetSettings(ctx)
+	done, _ := s.DB.SetupComplete(ctx)
+	optedIn := (body.IncludeDLC && !before.IncludeDLC) || (body.IncludeExtras && !before.IncludeExtras)
+	if optedIn && done && settings.WantsGame(*before) && s.GOG.Authenticated() {
+		go func() {
+			sctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if err := s.Syncer.SyncGame(sctx, id); err != nil {
+				s.Log.Warn("could not sync game after changing its options", "game_id", id, "error", err)
+			}
+			s.Downloads.Wake()
+		}()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "include_dlc": body.IncludeDLC, "include_extras": body.IncludeExtras})
+}
+
+// handleGameOffer answers what GOG offers for a game without planning any of
+// it, so the page of a game that is not selected can show what selecting it
+// would download.
+func (s *Server) handleGameOffer(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+	defer cancel()
+	offer, err := s.Syncer.Offer(ctx, id)
+	switch {
+	case errors.Is(err, library.ErrGameNotFound):
+		writeError(w, http.StatusNotFound, "game not found")
+		return
+	case err != nil:
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, offer)
 }
 
 func (s *Server) handleGameSync(w http.ResponseWriter, r *http.Request) {

@@ -157,6 +157,11 @@ func (m *Mock) ProductDetails(ctx context.Context, id int64) (*Product, error) {
 	return nil, &HTTPError{Status: 404, URL: fmt.Sprintf("mock://%d", id)}
 }
 
+// BoxArt implements API. The mock's listing image is already a 2:3 cover.
+func (m *Mock) BoxArt(ctx context.Context, id int64) (string, error) {
+	return "", nil
+}
+
 // SetBuild registers the Galaxy build reported for a product and OS.
 func (m *Mock) SetBuild(productID int64, os, buildID, version string) {
 	m.mu.Lock()
@@ -363,10 +368,17 @@ func MockCover(title string) string {
 
 // SampleLibrary returns the demo library.
 func SampleLibrary() []MockGame {
+	// A few games carry the user's own gog.com tags, so the tag filter has
+	// something to show.
+	tags := map[int64][]string{
+		1207658924: {"Completed", "Favorite"},
+		1207664663: {"Favorite"},
+		1207659212: {"Backlog"},
+	}
 	mk := func(id int64, title, slug string, win, mac, lin bool, p Product, dlcs ...Product) MockGame {
 		p.ExpandedDLCs = dlcs
 		return MockGame{
-			Listed:  ListedGame{ID: id, Title: title, Slug: slug, Image: MockCover(title), WorksWindows: win, WorksMac: mac, WorksLinux: lin},
+			Listed:  ListedGame{ID: id, Title: title, Slug: slug, Image: MockCover(title), WorksWindows: win, WorksMac: mac, WorksLinux: lin, Tags: tags[id]},
 			Product: p,
 		}
 	}

@@ -26,6 +26,8 @@ limit bandwidth and concurrency.
   grid with per-game file lists and selection, sorting by title, status or last update with an
   optional "downloaded first" grouping, downloads page with pause/resume, searchable logs,
   settings.
+- **Three download modes** – every game you own, only games you tick in the library, or the
+  ticked games plus every game you buy from now on (selected as soon as it shows up).
 - **Safe settings changes** – removing a platform (or DLC/extras), deselecting a game or switching
   to "selected games only" asks whether to keep or delete the files already on disk.
 - **Single static binary** – Go backend with the React UI embedded, SQLite for state, no cron

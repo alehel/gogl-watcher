@@ -79,6 +79,7 @@ export function NumberField({
 export const DOWNLOAD_MODE_LABELS: Record<Exclude<DownloadMode, "">, string> = {
   all: "Every game I own",
   selected: "Only games I select",
+  selected_new: "Only games I select, and new games",
 };
 
 /** Radio choice between downloading the whole library and only selected games. */
@@ -101,6 +102,10 @@ export function DownloadModePicker({
     {
       value: "selected",
       desc: "Nothing is downloaded until you tick games in the library. New games you buy are listed but not downloaded.",
+    },
+    {
+      value: "selected_new",
+      desc: "Like the above, but a game you buy from now on is selected as soon as it shows up. What you already own stays as you set it.",
     },
   ];
   return (

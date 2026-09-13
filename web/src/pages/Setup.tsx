@@ -12,6 +12,7 @@ import {
   type Settings,
   type SetupStep,
   type User,
+  selectsGames,
 } from "../api";
 import { AuthorizeForm } from "../components/AuthorizeForm";
 import { Loading, Spinner } from "../components/Common";
@@ -264,7 +265,7 @@ function GamesStep({ settings, onSaved, onBack }: { settings: Settings; onSaved:
       nextDisabled={mode === ""}
     >
       <DownloadModePicker value={mode} onChange={setMode} disabled={save.busy} />
-      {mode === "selected" && (
+      {selectsGames(mode) && (
         <p className="muted small">
           After setup, open the library and tick the games you want. No game is selected to begin with.
         </p>
@@ -461,7 +462,7 @@ function FinishStep({
         <dd>every {settings.check_interval_hours} h</dd>
       </dl>
       <p className="muted small">
-        {settings.download_mode === "selected"
+        {selectsGames(settings.download_mode)
           ? "Starting will fetch your game list right away. Nothing is downloaded until you select games in the library."
           : "Starting will run the first library sync right away and begin downloading installers into the library folder."}
       </p>

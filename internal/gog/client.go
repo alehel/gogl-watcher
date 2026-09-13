@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -462,7 +463,12 @@ func (c *Client) OwnedIDs(ctx context.Context) (OwnedSet, error) {
 type filteredProducts struct {
 	Page       int `json:"page"`
 	TotalPages int `json:"totalPages"`
-	Products   []struct {
+	// Tags is the catalogue of the user's own tags; products refer to them by id.
+	Tags []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"tags"`
+	Products []struct {
 		ID      int64  `json:"id"`
 		Title   string `json:"title"`
 		Slug    string `json:"slug"`
@@ -472,7 +478,24 @@ type filteredProducts struct {
 			Mac     bool `json:"Mac"`
 			Linux   bool `json:"Linux"`
 		} `json:"worksOn"`
+		Tags []string `json:"tags"`
 	} `json:"products"`
+}
+
+// tagNames resolves a product's tag ids against the catalogue; an id the
+// catalogue does not know is dropped.
+func (fp *filteredProducts) tagNames(ids []string) []string {
+	var names []string
+	for _, id := range ids {
+		for _, t := range fp.Tags {
+			if t.ID == id && t.Name != "" {
+				names = append(names, t.Name)
+				break
+			}
+		}
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
 }
 
 // ListGames implements API.
@@ -496,6 +519,7 @@ func (c *Client) ListGames(ctx context.Context, progress func(page, total int)) 
 			out = append(out, ListedGame{
 				ID: p.ID, Title: p.Title, Slug: p.Slug, Image: NormalizeImage(p.Image),
 				WorksWindows: p.WorksOn.Windows, WorksMac: p.WorksOn.Mac, WorksLinux: p.WorksOn.Linux,
+				Tags: fp.tagNames(p.Tags),
 			})
 		}
 		if progress != nil {
@@ -530,6 +554,27 @@ func (c *Client) ProductDetails(ctx context.Context, id int64) (*Product, error)
 		return nil, err
 	}
 	return &p, nil
+}
+
+// BoxArt implements API. The v2 games endpoint is public; a game GOG no longer
+// lists there answers 404, which is not a failure.
+func (c *Client) BoxArt(ctx context.Context, id int64) (string, error) {
+	var resp struct {
+		Links struct {
+			BoxArtImage struct {
+				Href string `json:"href"`
+			} `json:"boxArtImage"`
+		} `json:"_links"`
+	}
+	u := fmt.Sprintf("%s/v2/games/%d", apiBase, id)
+	if err := c.getJSON(ctx, u, false, &resp); err != nil {
+		var he *HTTPError
+		if errors.As(err, &he) && he.Status == http.StatusNotFound {
+			return "", nil
+		}
+		return "", err
+	}
+	return NormalizeImage(resp.Links.BoxArtImage.Href), nil
 }
 
 // buildOS maps a platform name used by the application onto the one the content

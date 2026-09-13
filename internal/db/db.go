@@ -71,6 +71,11 @@ CREATE TABLE IF NOT EXISTS games (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS game_tags (
+  game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  tag TEXT NOT NULL,
+  PRIMARY KEY (game_id, tag)
+);
 CREATE TABLE IF NOT EXISTS products (
   id INTEGER PRIMARY KEY,
   game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
@@ -137,6 +142,18 @@ func (d *DB) migrate() error {
 		return err
 	}
 	if err := d.addColumn("files", "verified_at", "INTEGER"); err != nil {
+		return err
+	}
+	if err := d.addColumn("games", "box_art", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := d.addColumn("games", "box_art_checked_at", "INTEGER"); err != nil {
+		return err
+	}
+	if err := d.addColumn("games", "include_dlc", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := d.addColumn("games", "include_extras", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	return d.migrateDownloadMode()
@@ -206,8 +223,9 @@ func (d *DB) SetKV(ctx context.Context, key, value string) error {
 
 // Download modes: which games of the library are downloaded.
 const (
-	DownloadAll      = "all"      // every owned game
-	DownloadSelected = "selected" // only games the user selected
+	DownloadAll         = "all"          // every owned game
+	DownloadSelected    = "selected"     // only games the user selected
+	DownloadSelectedNew = "selected_new" // selected games, and games bought from now on are selected as they appear
 )
 
 // Platforms are the installer platforms the application knows, in the order the
@@ -304,9 +322,9 @@ func (s *Settings) Normalize() error {
 	}
 	s.DownloadMode = strings.ToLower(strings.TrimSpace(s.DownloadMode))
 	switch s.DownloadMode {
-	case "", DownloadAll, DownloadSelected:
+	case "", DownloadAll, DownloadSelected, DownloadSelectedNew:
 	default:
-		return fmt.Errorf("download_mode must be %q or %q", DownloadAll, DownloadSelected)
+		return fmt.Errorf("download_mode must be %q, %q or %q", DownloadAll, DownloadSelected, DownloadSelectedNew)
 	}
 	return nil
 }
@@ -337,14 +355,29 @@ func (s Settings) SamePlan(o Settings) bool {
 		s.LanguageFallback == o.LanguageFallback && s.IncludeDLC == o.IncludeDLC && s.IncludeExtras == o.IncludeExtras
 }
 
-// SelectedOnly reports whether only explicitly selected games are downloaded.
+// SelectedOnly reports whether only selected games are downloaded (whether the
+// user selects them all, or new games select themselves).
 func (s Settings) SelectedOnly() bool {
-	return s.DownloadMode == DownloadSelected
+	return s.DownloadMode == DownloadSelected || s.DownloadMode == DownloadSelectedNew
+}
+
+// SelectsNewGames reports whether a game that newly appears in the library is
+// selected for download as it does.
+func (s Settings) SelectsNewGames() bool {
+	return s.DownloadMode == DownloadSelectedNew
 }
 
 // WantsGame reports whether a game's files should be downloaded under these settings.
 func (s Settings) WantsGame(g Game) bool {
 	return !s.SelectedOnly() || g.Selected
+}
+
+// ForGame returns the settings as they apply to one game: the library-wide
+// settings, with DLC and extras switched on where the game opted in.
+func (s Settings) ForGame(g Game) Settings {
+	s.IncludeDLC = s.IncludeDLC || g.IncludeDLC
+	s.IncludeExtras = s.IncludeExtras || g.IncludeExtras
+	return s
 }
 
 // WantsPlatform reports whether os is selected.
@@ -469,17 +502,33 @@ type Game struct {
 	ID              int64
 	Title           string
 	Slug            string
-	Image           string
+	Image           string // landscape store tile from the game list
+	BoxArt          string // portrait cover, fetched separately; may be empty
+	BoxArtCheckedAt *time.Time
 	Folder          string
 	WorksWindows    bool
 	WorksMac        bool
 	WorksLinux      bool
 	Owned           bool
-	Selected        bool // chosen for download (only matters in the "selected" download mode)
+	Tags            []string // the user's own gog.com tags on the game, sorted
+	Selected        bool     // chosen for download (only matters in the "selected" download mode)
+	// IncludeDLC and IncludeExtras opt this game into DLC and extras when the
+	// settings leave them out for the library as a whole.
+	IncludeDLC      bool
+	IncludeExtras   bool
 	DetailsSyncedAt *time.Time
 	DetailsError    string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+}
+
+// Cover is the artwork to show for the game: the portrait cover when GOG has
+// one, else the landscape tile.
+func (g Game) Cover() string {
+	if g.BoxArt != "" {
+		return g.BoxArt
+	}
+	return g.Image
 }
 
 // WorksOn reports whether GOG lists the game as running on a platform.
@@ -505,16 +554,105 @@ type GameStats struct {
 	BytesDone    int64
 }
 
-// UpsertGame inserts or updates listing information. Folder is only set on insert.
+// UpsertGame inserts or updates listing information, tags included. Folder is
+// only set on insert.
 func (d *DB) UpsertGame(ctx context.Context, g Game) error {
 	now := time.Now().UnixMilli()
-	_, err := d.ExecContext(ctx, `INSERT INTO games(id, title, slug, image, folder, works_windows, works_mac, works_linux, owned, created_at, updated_at)
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `INSERT INTO games(id, title, slug, image, folder, works_windows, works_mac, works_linux, owned, created_at, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET title = excluded.title, slug = excluded.slug, image = excluded.image,
 		works_windows = excluded.works_windows, works_mac = excluded.works_mac, works_linux = excluded.works_linux,
 		owned = 1, updated_at = excluded.updated_at`,
 		g.ID, g.Title, g.Slug, g.Image, g.Folder, b2i(g.WorksWindows), b2i(g.WorksMac), b2i(g.WorksLinux), now, now)
-	return err
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM game_tags WHERE game_id = ?`, g.ID); err != nil {
+		return err
+	}
+	for _, t := range g.Tags {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO game_tags(game_id, tag) VALUES(?, ?)`, g.ID, t); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// loadTags attaches the tags of the given games.
+func (d *DB) loadTags(ctx context.Context, games []Game) error {
+	if len(games) == 0 {
+		return nil
+	}
+	byID := map[int64]*Game{}
+	args := make([]any, 0, len(games))
+	for i := range games {
+		byID[games[i].ID] = &games[i]
+		args = append(args, games[i].ID)
+	}
+	rows, err := d.QueryContext(ctx, `SELECT game_id, tag FROM game_tags WHERE game_id IN (`+placeholders(len(games))+`) ORDER BY tag COLLATE NOCASE`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var tag string
+		if err := rows.Scan(&id, &tag); err != nil {
+			return err
+		}
+		if g := byID[id]; g != nil {
+			g.Tags = append(g.Tags, tag)
+		}
+	}
+	return rows.Err()
+}
+
+// Tag is one of the user's gog.com tags with the number of owned games carrying it.
+type Tag struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+// ListTags returns every tag in use on an owned game, by name.
+func (d *DB) ListTags(ctx context.Context) ([]Tag, error) {
+	rows, err := d.QueryContext(ctx, `SELECT t.tag, COUNT(*) FROM game_tags t JOIN games g ON g.id = t.game_id
+		WHERE g.owned = 1 GROUP BY t.tag ORDER BY t.tag COLLATE NOCASE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Tag{}
+	for rows.Next() {
+		var t Tag
+		if err := rows.Scan(&t.Name, &t.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// GameIDs returns the id of every game ever listed, owned or not.
+func (d *DB) GameIDs(ctx context.Context) (map[int64]bool, error) {
+	rows, err := d.QueryContext(ctx, `SELECT id FROM games`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
 }
 
 // FolderTaken reports whether another game already uses folder.
@@ -539,24 +677,34 @@ func (d *DB) GetGame(ctx context.Context, id int64) (*Game, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &g, nil
+	rows.Close()
+	gs := []Game{g}
+	if err := d.loadTags(ctx, gs); err != nil {
+		return nil, err
+	}
+	return &gs[0], nil
 }
 
-const gameSelect = `SELECT id, title, slug, image, folder, works_windows, works_mac, works_linux, owned, selected, details_synced_at, details_error, created_at, updated_at FROM games`
+const gameSelect = `SELECT id, title, slug, image, box_art, box_art_checked_at, folder, works_windows, works_mac, works_linux, owned, selected, include_dlc, include_extras, details_synced_at, details_error, created_at, updated_at FROM games`
 
 func scanGame(rows *sql.Rows) (Game, error) {
 	var g Game
-	var ww, wm, wl, owned, selected int
-	var synced sql.NullInt64
+	var ww, wm, wl, owned, selected, dlc, extras int
+	var synced, artChecked sql.NullInt64
 	var created, updated int64
-	err := rows.Scan(&g.ID, &g.Title, &g.Slug, &g.Image, &g.Folder, &ww, &wm, &wl, &owned, &selected, &synced, &g.DetailsError, &created, &updated)
+	err := rows.Scan(&g.ID, &g.Title, &g.Slug, &g.Image, &g.BoxArt, &artChecked, &g.Folder, &ww, &wm, &wl, &owned, &selected, &dlc, &extras, &synced, &g.DetailsError, &created, &updated)
 	if err != nil {
 		return g, err
 	}
 	g.WorksWindows, g.WorksMac, g.WorksLinux, g.Owned, g.Selected = ww == 1, wm == 1, wl == 1, owned == 1, selected == 1
+	g.IncludeDLC, g.IncludeExtras = dlc == 1, extras == 1
 	if synced.Valid {
 		t := time.UnixMilli(synced.Int64)
 		g.DetailsSyncedAt = &t
+	}
+	if artChecked.Valid {
+		t := time.UnixMilli(artChecked.Int64)
+		g.BoxArtCheckedAt = &t
 	}
 	g.CreatedAt, g.UpdatedAt = time.UnixMilli(created), time.UnixMilli(updated)
 	return g, nil
@@ -577,7 +725,11 @@ func (d *DB) ListGames(ctx context.Context) ([]Game, error) {
 		}
 		out = append(out, g)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	return out, d.loadTags(ctx, out)
 }
 
 // SetGamesSelected marks the given games as selected (or not) for download.
@@ -590,6 +742,13 @@ func (d *DB) SetGamesSelected(ctx context.Context, ids []int64, selected bool) e
 		args = append(args, id)
 	}
 	_, err := d.ExecContext(ctx, `UPDATE games SET selected = ?, updated_at = ? WHERE id IN (`+placeholders(len(ids))+`)`, args...)
+	return err
+}
+
+// SetGameOptions stores a game's own DLC and extras opt-ins.
+func (d *DB) SetGameOptions(ctx context.Context, id int64, dlc, extras bool) error {
+	_, err := d.ExecContext(ctx, `UPDATE games SET include_dlc = ?, include_extras = ?, updated_at = ? WHERE id = ?`,
+		b2i(dlc), b2i(extras), time.Now().UnixMilli(), id)
 	return err
 }
 
@@ -614,6 +773,13 @@ func (d *DB) SetGameDetailsSynced(ctx context.Context, id int64, errMsg string) 
 		return err
 	}
 	_, err := d.ExecContext(ctx, `UPDATE games SET details_synced_at = ?, details_error = '', updated_at = ? WHERE id = ?`, now, now, id)
+	return err
+}
+
+// SetGameBoxArt records the outcome of a box art lookup, empty when GOG has none.
+func (d *DB) SetGameBoxArt(ctx context.Context, id int64, url string) error {
+	now := time.Now().UnixMilli()
+	_, err := d.ExecContext(ctx, `UPDATE games SET box_art = ?, box_art_checked_at = ? WHERE id = ?`, url, now, id)
 	return err
 }
 

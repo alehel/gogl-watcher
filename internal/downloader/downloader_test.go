@@ -158,3 +158,71 @@ func TestResumeAndFailure(t *testing.T) {
 		}
 	}
 }
+
+// Deselecting a game whose files are transferring must stop the transfers for
+// good. Dropping the rows one at a time used to let the queue, woken by the
+// first abort, start the game's next file again from a row that was about to
+// go; that transfer then ran on with nothing left to cancel it through.
+func TestDeselectingStopsRunningTransfers(t *testing.T) {
+	d, m, paths, syncer := setup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Big and slow, so the transfers are running while the game is deselected.
+	m.Speed = 200 << 10
+	for gi := range m.Games {
+		p := &m.Games[gi].Product
+		for ii := range p.Downloads.Installers {
+			for fi := range p.Downloads.Installers[ii].Files {
+				f := &p.Downloads.Installers[ii].Files[fi]
+				f.Size = 8 << 20
+				f.Downlink = gog.MockDownlink(p.ID, string(f.ID), "file_"+string(f.ID)+".bin", int64(f.Size))
+			}
+		}
+	}
+	settings := db.DefaultSettings()
+	settings.Platforms = []string{"windows"}
+	settings.ContentChosen = true
+	settings.DownloadMode = db.DownloadSelected
+	settings.MaxConcurrentDownloads = 1
+	if err := d.SaveSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	_ = d.SetSetupComplete(ctx, true)
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mgr := New(d, m, paths, slog.Default())
+	syncer.OnDrop = mgr.Cancel
+	mgr.Configure(settings, true)
+	go mgr.Run(ctx)
+
+	game := m.Games[0].Listed.ID
+	if err := syncer.SetSelection(ctx, []int64{game}, true, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.SyncGame(ctx, game); err != nil {
+		t.Fatal(err)
+	}
+	mgr.Wake()
+	waitFor(t, 10*time.Second, func() bool { return len(mgr.Active()) > 0 })
+
+	if err := syncer.SetSelection(ctx, []int64{game}, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing may be running once the call returns, and nothing may start later.
+	if a := mgr.Active(); len(a) != 0 {
+		t.Fatalf("transfers still running after deselecting: %+v", a)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if a := mgr.Active(); len(a) != 0 {
+		t.Fatalf("a transfer started again after deselecting: %+v", a)
+	}
+	files, _ := d.ListActiveFilesByGame(ctx, game)
+	if len(files) != 0 {
+		t.Errorf("%d files still tracked", len(files))
+	}
+	parts, _ := filepath.Glob(filepath.Join(paths.Root, "*", "*", "*.part"))
+	if len(parts) != 0 {
+		t.Errorf("partial files left behind: %v", parts)
+	}
+}

@@ -3,8 +3,10 @@
 
 export type SetupStep = "auth" | "games" | "platforms" | "content" | "done";
 /** Which games are downloaded: everything owned, or only games selected in the library. Empty until setup asked. */
-export type DownloadMode = "" | "all" | "selected";
-export type SyncPhase = "" | "listing" | "details" | "reconciling";
+export type DownloadMode = "" | "all" | "selected" | "selected_new";
+/** Whether the mode downloads only selected games (with or without new games selecting themselves). */
+export const selectsGames = (mode: DownloadMode | undefined) => mode === "selected" || mode === "selected_new";
+export type SyncPhase = "" | "listing" | "artwork" | "details" | "reconciling";
 export type Platform = "windows" | "mac" | "linux";
 export type GameStatus =
   | "complete"
@@ -55,6 +57,9 @@ export interface LibraryTotals {
   unsynced: number;
   unselected: number;
   download_mode: DownloadMode;
+  /** The library-wide DLC and extras settings; a game can opt in on its own when they are off. */
+  include_dlc: boolean;
+  include_extras: boolean;
   bytes_total: number;
   bytes_done: number;
 }
@@ -130,9 +135,14 @@ export interface GameSummary {
   image: string | null;
   folder: string;
   works_on: WorksOn;
+  /** The user's own gog.com tags on the game, sorted. */
+  tags: string[];
   owned: boolean;
-  /** Chosen for download; only meaningful when download_mode is "selected". */
+  /** Chosen for download; only meaningful when the download mode selects games. */
   selected: boolean;
+  /** The game's own DLC and extras opt-ins; they matter when the library-wide setting is off. */
+  include_dlc: boolean;
+  include_extras: boolean;
   status: GameStatus;
   files_total: number;
   files_done: number;
@@ -175,6 +185,35 @@ export interface Product {
 export interface GameDetail {
   game: GameSummary;
   products: Product[];
+}
+
+/** One installer (possibly in parts) or extra GOG offers for a product. */
+export interface OfferItem {
+  kind: FileKind;
+  os: Platform | "";
+  language: string;
+  name: string;
+  version: string;
+  type?: string;
+  size: number;
+  files: number;
+  /** Whether the current settings would download it. */
+  wanted: boolean;
+}
+
+export interface OfferProduct {
+  id: number;
+  title: string;
+  is_dlc: boolean;
+  items: OfferItem[];
+}
+
+/** What GOG offers for a game, read live; nothing of it is queued. */
+export interface Offer {
+  fetched_at: string;
+  products: OfferProduct[];
+  wanted_files: number;
+  wanted_bytes: number;
 }
 
 export interface ActiveDownload {
@@ -315,15 +354,31 @@ export const putSettings = (settings: Settings, onRemoved: OnRemoved = null) =>
 export const getLanguages = () => request<{ languages: LanguageOption[] }>("GET", "/api/settings/languages");
 
 // ---- Library ----
+/** One of the user's gog.com tags, with the number of owned games carrying it. */
+export interface Tag {
+  name: string;
+  count: number;
+}
+
 export interface GamesQuery {
   q?: string;
   status?: GameStatus | "";
+  /** Only games carrying this gog.com tag. */
+  tag?: string;
   sort?: GameSort;
   /** Lists games with files on disk before the rest; `sort` orders each group. */
   downloaded_first?: boolean;
 }
-export const getGames = (query: GamesQuery = {}) => request<{ games: GameSummary[] }>("GET", `/api/games${qs(query)}`);
+export const getGames = (query: GamesQuery = {}) =>
+  request<{ games: GameSummary[]; tags: Tag[] }>("GET", `/api/games${qs(query)}`);
 export const getGame = (id: number | string) => request<GameDetail>("GET", `/api/games/${id}`);
+export const getGameOffer = (id: number | string) => request<Offer>("GET", `/api/games/${id}/offer`);
+/** Opts a game in to or out of DLC and extras on its own. Opting out of downloaded files needs `onRemoved` (409 otherwise). */
+export const setGameOptions = (
+  id: number | string,
+  options: { include_dlc: boolean; include_extras: boolean },
+  onRemoved: OnRemoved = null,
+) => request<{ ok: true }>("PUT", `/api/games/${id}/options`, { ...options, on_removed: onRemoved });
 export const syncGame = (id: number | string) => request<{ ok: true }>("POST", `/api/games/${id}/sync`);
 export const retryGame = (id: number | string) => request<{ ok: true }>("POST", `/api/games/${id}/retry`);
 export const retryFile = (id: number | string) => request<{ ok: true }>("POST", `/api/files/${id}/retry`);
