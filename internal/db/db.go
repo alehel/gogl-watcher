@@ -139,6 +139,12 @@ func (d *DB) migrate() error {
 	if err := d.addColumn("files", "verified_at", "INTEGER"); err != nil {
 		return err
 	}
+	if err := d.addColumn("games", "box_art", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := d.addColumn("games", "box_art_checked_at", "INTEGER"); err != nil {
+		return err
+	}
 	return d.migrateDownloadMode()
 }
 
@@ -469,7 +475,9 @@ type Game struct {
 	ID              int64
 	Title           string
 	Slug            string
-	Image           string
+	Image           string // landscape store tile from the game list
+	BoxArt          string // portrait cover, fetched separately; may be empty
+	BoxArtCheckedAt *time.Time
 	Folder          string
 	WorksWindows    bool
 	WorksMac        bool
@@ -480,6 +488,15 @@ type Game struct {
 	DetailsError    string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+}
+
+// Cover is the artwork to show for the game: the portrait cover when GOG has
+// one, else the landscape tile.
+func (g Game) Cover() string {
+	if g.BoxArt != "" {
+		return g.BoxArt
+	}
+	return g.Image
 }
 
 // WorksOn reports whether GOG lists the game as running on a platform.
@@ -542,14 +559,14 @@ func (d *DB) GetGame(ctx context.Context, id int64) (*Game, error) {
 	return &g, nil
 }
 
-const gameSelect = `SELECT id, title, slug, image, folder, works_windows, works_mac, works_linux, owned, selected, details_synced_at, details_error, created_at, updated_at FROM games`
+const gameSelect = `SELECT id, title, slug, image, box_art, box_art_checked_at, folder, works_windows, works_mac, works_linux, owned, selected, details_synced_at, details_error, created_at, updated_at FROM games`
 
 func scanGame(rows *sql.Rows) (Game, error) {
 	var g Game
 	var ww, wm, wl, owned, selected int
-	var synced sql.NullInt64
+	var synced, artChecked sql.NullInt64
 	var created, updated int64
-	err := rows.Scan(&g.ID, &g.Title, &g.Slug, &g.Image, &g.Folder, &ww, &wm, &wl, &owned, &selected, &synced, &g.DetailsError, &created, &updated)
+	err := rows.Scan(&g.ID, &g.Title, &g.Slug, &g.Image, &g.BoxArt, &artChecked, &g.Folder, &ww, &wm, &wl, &owned, &selected, &synced, &g.DetailsError, &created, &updated)
 	if err != nil {
 		return g, err
 	}
@@ -557,6 +574,10 @@ func scanGame(rows *sql.Rows) (Game, error) {
 	if synced.Valid {
 		t := time.UnixMilli(synced.Int64)
 		g.DetailsSyncedAt = &t
+	}
+	if artChecked.Valid {
+		t := time.UnixMilli(artChecked.Int64)
+		g.BoxArtCheckedAt = &t
 	}
 	g.CreatedAt, g.UpdatedAt = time.UnixMilli(created), time.UnixMilli(updated)
 	return g, nil
@@ -614,6 +635,13 @@ func (d *DB) SetGameDetailsSynced(ctx context.Context, id int64, errMsg string) 
 		return err
 	}
 	_, err := d.ExecContext(ctx, `UPDATE games SET details_synced_at = ?, details_error = '', updated_at = ? WHERE id = ?`, now, now, id)
+	return err
+}
+
+// SetGameBoxArt records the outcome of a box art lookup, empty when GOG has none.
+func (d *DB) SetGameBoxArt(ctx context.Context, id int64, url string) error {
+	now := time.Now().UnixMilli()
+	_, err := d.ExecContext(ctx, `UPDATE games SET box_art = ?, box_art_checked_at = ? WHERE id = ?`, url, now, id)
 	return err
 }
 

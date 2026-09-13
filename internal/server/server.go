@@ -184,7 +184,7 @@ type gameSummary struct {
 
 func (s *Server) summarize(g db.Game, st db.GameStats, active map[int64][]downloader.Progress, settings db.Settings) gameSummary {
 	out := gameSummary{
-		ID: g.ID, Title: g.Title, Slug: g.Slug, Image: g.Image, Folder: g.Folder,
+		ID: g.ID, Title: g.Title, Slug: g.Slug, Image: g.Cover(), Folder: g.Folder,
 		WorksOn: worksOn(g),
 		Owned:   g.Owned, Selected: g.Selected, FilesTotal: st.FilesTotal, FilesDone: st.FilesDone, BytesTotal: st.BytesTotal, BytesDone: st.BytesDone,
 		LastSyncedAt: g.DetailsSyncedAt, UpdatedAt: g.UpdatedAt, DetailsError: g.DetailsError,

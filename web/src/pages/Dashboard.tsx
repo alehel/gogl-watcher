@@ -119,6 +119,7 @@ function Item({ label, value, danger }: { label: string; value: number | string;
 
 const PHASES: Record<string, string> = {
   listing: "Listing owned games",
+  artwork: "Fetching covers",
   details: "Fetching game details",
   reconciling: "Reconciling files",
 };

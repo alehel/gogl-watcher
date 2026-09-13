@@ -47,6 +47,9 @@ const (
 	// the same game and platform. A short check interval would otherwise spend
 	// most of its requests on a signal that moves days before the installers do.
 	buildCheckInterval = 6 * time.Hour
+	// boxArtRetryInterval is how long a game GOG lists without a portrait cover
+	// is left alone before asking again.
+	boxArtRetryInterval = 30 * 24 * time.Hour
 )
 
 // ErrSyncRunning is returned when a sync is requested while one is active.
@@ -290,6 +293,7 @@ func (s *Syncer) syncAll(ctx context.Context) error {
 		return err
 	}
 	s.log.Info("game list fetched", "games", len(games))
+	s.fetchBoxArt(ctx, ids)
 	s.setPhase("details", len(games), 0)
 
 	var (
@@ -339,6 +343,55 @@ func (s *Syncer) syncAll(ctx context.Context) error {
 		return fmt.Errorf("%d of %d games could not be synced (first error: %v)", failed, len(games), firstEr)
 	}
 	return nil
+}
+
+// fetchBoxArt fills in the portrait cover of every listed game that has none
+// yet. The list only carries the landscape store tile, and details are fetched
+// for selected games only, so the covers need a pass of their own. It is
+// best-effort: a missing cover is cosmetic and must not stop a sync.
+func (s *Syncer) fetchBoxArt(ctx context.Context, ids []int64) {
+	var todo []db.Game
+	for _, id := range ids {
+		g, err := s.db.GetGame(ctx, id)
+		if err != nil || g == nil || g.BoxArt != "" {
+			continue
+		}
+		if g.BoxArtCheckedAt != nil && time.Since(*g.BoxArtCheckedAt) < boxArtRetryInterval {
+			continue
+		}
+		todo = append(todo, *g)
+	}
+	if len(todo) == 0 {
+		return
+	}
+	s.setPhase("artwork", len(todo), 0)
+	var (
+		wg   sync.WaitGroup
+		sem  = make(chan struct{}, s.details)
+		done atomic.Int64
+	)
+	for _, g := range todo {
+		if ctx.Err() != nil {
+			break
+		}
+		sem <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			defer s.setPhase("artwork", -1, int(done.Add(1)))
+			art, err := s.gog.BoxArt(ctx, g.ID)
+			if err != nil {
+				if ctx.Err() == nil {
+					s.log.Debug("could not fetch box art", "game", g.Title, "error", err)
+				}
+				return
+			}
+			if err := s.db.SetGameBoxArt(ctx, g.ID, art); err != nil && ctx.Err() == nil {
+				s.log.Warn("could not record box art", "game", g.Title, "error", err)
+			}
+		})
+	}
+	wg.Wait()
+	s.log.Info("box art fetched", "games", len(todo))
 }
 
 func (s *Syncer) folderFor(ctx context.Context, g gog.ListedGame) (string, error) {

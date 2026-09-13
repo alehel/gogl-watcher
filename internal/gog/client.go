@@ -532,6 +532,27 @@ func (c *Client) ProductDetails(ctx context.Context, id int64) (*Product, error)
 	return &p, nil
 }
 
+// BoxArt implements API. The v2 games endpoint is public; a game GOG no longer
+// lists there answers 404, which is not a failure.
+func (c *Client) BoxArt(ctx context.Context, id int64) (string, error) {
+	var resp struct {
+		Links struct {
+			BoxArtImage struct {
+				Href string `json:"href"`
+			} `json:"boxArtImage"`
+		} `json:"_links"`
+	}
+	u := fmt.Sprintf("%s/v2/games/%d", apiBase, id)
+	if err := c.getJSON(ctx, u, false, &resp); err != nil {
+		var he *HTTPError
+		if errors.As(err, &he) && he.Status == http.StatusNotFound {
+			return "", nil
+		}
+		return "", err
+	}
+	return NormalizeImage(resp.Links.BoxArtImage.Href), nil
+}
+
 // buildOS maps a platform name used by the application onto the one the content
 // system uses in its paths.
 func buildOS(os string) string {

@@ -4,7 +4,7 @@
 export type SetupStep = "auth" | "games" | "platforms" | "content" | "done";
 /** Which games are downloaded: everything owned, or only games selected in the library. Empty until setup asked. */
 export type DownloadMode = "" | "all" | "selected";
-export type SyncPhase = "" | "listing" | "details" | "reconciling";
+export type SyncPhase = "" | "listing" | "artwork" | "details" | "reconciling";
 export type Platform = "windows" | "mac" | "linux";
 export type GameStatus =
   | "complete"

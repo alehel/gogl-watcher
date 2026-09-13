@@ -157,6 +157,11 @@ func (m *Mock) ProductDetails(ctx context.Context, id int64) (*Product, error) {
 	return nil, &HTTPError{Status: 404, URL: fmt.Sprintf("mock://%d", id)}
 }
 
+// BoxArt implements API. The mock's listing image is already a 2:3 cover.
+func (m *Mock) BoxArt(ctx context.Context, id int64) (string, error) {
+	return "", nil
+}
+
 // SetBuild registers the Galaxy build reported for a product and OS.
 func (m *Mock) SetBuild(productID int64, os, buildID, version string) {
 	m.mu.Lock()
