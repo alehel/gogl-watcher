@@ -93,6 +93,9 @@ type Syncer struct {
 	// selection-triggered sync of a game, the scheduled sync and a selection
 	// change would otherwise race on its file rows.
 	gameLocks sync.Map
+	// offers caches what GOG offers per game for the game page; see Offer.
+	offerMu sync.Mutex
+	offers  map[int64]cachedOffer
 	// planSem (capacity 1) serialises a settings change with the start of a sync,
 	// so a sync cannot read the settings while ApplySettings is still storing them.
 	planSem chan struct{}

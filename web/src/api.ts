@@ -177,6 +177,35 @@ export interface GameDetail {
   products: Product[];
 }
 
+/** One installer (possibly in parts) or extra GOG offers for a product. */
+export interface OfferItem {
+  kind: FileKind;
+  os: Platform | "";
+  language: string;
+  name: string;
+  version: string;
+  type?: string;
+  size: number;
+  files: number;
+  /** Whether the current settings would download it. */
+  wanted: boolean;
+}
+
+export interface OfferProduct {
+  id: number;
+  title: string;
+  is_dlc: boolean;
+  items: OfferItem[];
+}
+
+/** What GOG offers for a game, read live; nothing of it is queued. */
+export interface Offer {
+  fetched_at: string;
+  products: OfferProduct[];
+  wanted_files: number;
+  wanted_bytes: number;
+}
+
 export interface ActiveDownload {
   file_id: number;
   game_id: number;
@@ -324,6 +353,7 @@ export interface GamesQuery {
 }
 export const getGames = (query: GamesQuery = {}) => request<{ games: GameSummary[] }>("GET", `/api/games${qs(query)}`);
 export const getGame = (id: number | string) => request<GameDetail>("GET", `/api/games/${id}`);
+export const getGameOffer = (id: number | string) => request<Offer>("GET", `/api/games/${id}/offer`);
 export const syncGame = (id: number | string) => request<{ ok: true }>("POST", `/api/games/${id}/sync`);
 export const retryGame = (id: number | string) => request<{ ok: true }>("POST", `/api/games/${id}/retry`);
 export const retryFile = (id: number | string) => request<{ ok: true }>("POST", `/api/files/${id}/retry`);

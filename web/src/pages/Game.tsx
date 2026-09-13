@@ -1,5 +1,17 @@
 import { Link, useParams } from "react-router-dom";
-import { ApiError, getGame, retryFile, retryGame, syncGame, type GameFile, type Product } from "../api";
+import {
+  ApiError,
+  getGame,
+  getGameOffer,
+  retryFile,
+  retryGame,
+  syncGame,
+  type GameFile,
+  type Offer,
+  type OfferItem,
+  type OfferProduct,
+  type Product,
+} from "../api";
 import { ApiErrorNotice, CoverImage, EmptyState, Loading, Spinner, TimeAgo } from "../components/Common";
 import { DataTable } from "../components/DataTable";
 import { IconBack } from "../components/Icons";
@@ -9,13 +21,19 @@ import { FileStatusDot, GameStatusDot, gameStatusTone } from "../components/Stat
 import { useStatus } from "../components/StatusContext";
 import { useToastAction } from "../components/Toast";
 import { formatBytes, formatRelative, formatSpeed, platformLabel, platformsText, plural, ratio } from "../format";
-import { useNow, usePolling } from "../hooks";
+import { IconCheck } from "../components/Icons";
+import { useNow, usePolling, type PollingState } from "../hooks";
 
 export function GamePage() {
   const { id = "" } = useParams();
   const { status, refresh: refreshStatus } = useStatus();
   const game = usePolling(() => getGame(id), 2000, [id]);
   const now = useNow();
+  // A game that is not selected has nothing planned, so its page asks GOG what
+  // selecting it would fetch. Polling the game keeps its status current; the
+  // offer is loaded once, and the server caches it for a while.
+  const unselected = game.data?.game.status === "unselected";
+  const offer = usePolling(() => getGameOffer(id), 0, [id], unselected);
 
   const sync = useToastAction(() => syncGame(id), { success: "Re-checking on GOG…", onDone: game.refresh });
   const retry = useToastAction(() => retryGame(id), { success: "Failed files queued again", onDone: game.refresh });
@@ -56,7 +74,6 @@ export function GamePage() {
   }
 
   const { game: g, products } = game.data;
-  const unselected = g.status === "unselected";
   const hasErrors = products.some((p) => p.files.some((f) => f.status === "error"));
   const hasFiles = products.some((p) => p.files.length > 0);
   const sorted = [...products].sort((a, b) => Number(a.is_dlc) - Number(b.is_dlc) || a.title.localeCompare(b.title));
@@ -125,10 +142,13 @@ export function GamePage() {
       </div>
 
       {unselected && (
-        <EmptyState>
-          This game is not selected for download. Select it to fetch its installers
-          {hasFiles ? "; files kept from before are listed below as inactive." : "."}
-        </EmptyState>
+        <>
+          <EmptyState>
+            This game is not selected for download. Select it to fetch its installers
+            {hasFiles ? "; files kept from before are listed below as inactive." : "."}
+          </EmptyState>
+          <OfferSection offer={offer} />
+        </>
       )}
       {/* An unselected game with nothing on disk has said all there is to say above. */}
       {(!unselected || hasFiles) &&
@@ -142,6 +162,83 @@ export function GamePage() {
           sorted.map((p) => <ProductSection key={p.id} product={p} onChanged={game.refresh} />)
         ))}
     </div>
+  );
+}
+
+/** What GOG offers for a game that is not selected, with what the settings would pick marked. */
+function OfferSection({ offer }: { offer: PollingState<Offer> }) {
+  if (offer.loading && !offer.data) return <Loading text="Asking GOG what is available…" />;
+  if (!offer.data) return <ApiErrorNotice error={offer.error} />;
+  const { products, wanted_files, wanted_bytes } = offer.data;
+  const sorted = [...products].sort((a, b) => Number(a.is_dlc) - Number(b.is_dlc) || a.title.localeCompare(b.title));
+  return (
+    <>
+      <div className="muted">
+        Available on GOG. With the current settings, selecting this game downloads{" "}
+        {wanted_files === 0 ? "nothing" : `${plural(wanted_files, "file")} (${formatBytes(wanted_bytes)})`}; the files
+        marked <IconCheck /> are the ones it would fetch.
+      </div>
+      {sorted.map((p) => (
+        <OfferProductSection key={p.id} product={p} />
+      ))}
+    </>
+  );
+}
+
+function OfferProductSection({ product }: { product: OfferProduct }) {
+  const wanted = product.items.filter((i) => i.wanted).length;
+  return (
+    <section className="section product">
+      <div className="section-head">
+        <h2 className="section-title">
+          {product.title}
+          {product.is_dlc && <span className="dlc">DLC</span>}
+        </h2>
+        <span className="meta num">
+          {wanted} of {product.items.length} items
+        </span>
+      </div>
+      {product.items.length === 0 ? (
+        <EmptyState>GOG offers no files for this product.</EmptyState>
+      ) : (
+        <DataTable>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>OS</th>
+              <th>Lang</th>
+              <th>Name</th>
+              <th>Version</th>
+              <th className="num">Size</th>
+              <th className="num">Files</th>
+              <th>Selected</th>
+            </tr>
+          </thead>
+          <tbody>
+            {product.items.map((it, i) => (
+              <OfferRow key={i} item={it} />
+            ))}
+          </tbody>
+        </DataTable>
+      )}
+    </section>
+  );
+}
+
+function OfferRow({ item: it }: { item: OfferItem }) {
+  return (
+    <tr className={it.wanted ? "" : "dim"}>
+      <td>{it.kind === "installer" ? "Installer" : it.type ? `Extra · ${it.type}` : "Extra"}</td>
+      <td>{it.os ? platformLabel(it.os) : "—"}</td>
+      <td className="mono">{it.language || "—"}</td>
+      <td className="clip" title={it.name}>
+        {it.name}
+      </td>
+      <td className="mono">{it.version || "—"}</td>
+      <td className="num">{formatBytes(it.size)}</td>
+      <td className="num">{it.files}</td>
+      <td>{it.wanted ? <IconCheck /> : <span className="faint">—</span>}</td>
+    </tr>
   );
 }
 

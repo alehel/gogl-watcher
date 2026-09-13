@@ -59,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/games", s.handleGames)
 	mux.HandleFunc("PUT /api/games/selection", s.handleGamesSelection)
 	mux.HandleFunc("GET /api/games/{id}", s.handleGame)
+	mux.HandleFunc("GET /api/games/{id}/offer", s.handleGameOffer)
 	mux.HandleFunc("POST /api/games/{id}/sync", s.handleGameSync)
 	mux.HandleFunc("POST /api/games/{id}/retry", s.handleGameRetry)
 	mux.HandleFunc("POST /api/files/{id}/retry", s.handleFileRetry)
@@ -678,6 +679,29 @@ func (s *Server) handleGamesSelection(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "selected": body.Selected, "ids": body.IDs})
+}
+
+// handleGameOffer answers what GOG offers for a game without planning any of
+// it, so the page of a game that is not selected can show what selecting it
+// would download.
+func (s *Server) handleGameOffer(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+	defer cancel()
+	offer, err := s.Syncer.Offer(ctx, id)
+	switch {
+	case errors.Is(err, library.ErrGameNotFound):
+		writeError(w, http.StatusNotFound, "game not found")
+		return
+	case err != nil:
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, offer)
 }
 
 func (s *Server) handleGameSync(w http.ResponseWriter, r *http.Request) {
