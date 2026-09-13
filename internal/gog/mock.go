@@ -368,10 +368,17 @@ func MockCover(title string) string {
 
 // SampleLibrary returns the demo library.
 func SampleLibrary() []MockGame {
+	// A few games carry the user's own gog.com tags, so the tag filter has
+	// something to show.
+	tags := map[int64][]string{
+		1207658924: {"Completed", "Favorite"},
+		1207664663: {"Favorite"},
+		1207659212: {"Backlog"},
+	}
 	mk := func(id int64, title, slug string, win, mac, lin bool, p Product, dlcs ...Product) MockGame {
 		p.ExpandedDLCs = dlcs
 		return MockGame{
-			Listed:  ListedGame{ID: id, Title: title, Slug: slug, Image: MockCover(title), WorksWindows: win, WorksMac: mac, WorksLinux: lin},
+			Listed:  ListedGame{ID: id, Title: title, Slug: slug, Image: MockCover(title), WorksWindows: win, WorksMac: mac, WorksLinux: lin, Tags: tags[id]},
 			Product: p,
 		}
 	}

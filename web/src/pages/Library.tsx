@@ -64,15 +64,17 @@ export function LibraryPage() {
   const { status, refresh: refreshStatus } = useStatus();
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<GameStatus | "">("");
+  const [tag, setTag] = useState("");
   const [sort, setSort] = useState<GameSort>("title");
   const [downloadedFirst, setDownloadedFirst] = useLocalStorage(DOWNLOADED_FIRST_KEY, false);
   const [view, setView] = useLocalStorage<View>(VIEW_KEY, "table");
   const dq = useDebounced(q.trim(), 250);
 
   const games = usePolling(
-    () => getGames({ q: dq, status: filter, sort, downloaded_first: downloadedFirst || undefined }),
+    () =>
+      getGames({ q: dq, status: filter, tag: tag || undefined, sort, downloaded_first: downloadedFirst || undefined }),
     5000,
-    [dq, filter, sort, downloadedFirst],
+    [dq, filter, tag, sort, downloadedFirst],
   );
   const selection = useGameSelection(() => {
     games.refresh();
@@ -97,6 +99,7 @@ export function LibraryPage() {
   const visibleStatuses = selectedOnly ? STATUSES : STATUSES.filter((s) => s !== "unselected");
 
   const list = games.data?.games ?? [];
+  const tags = games.data?.tags ?? [];
   // With "downloaded first" the two groups are set apart, so the eye finds the
   // boundary without reading the file counts.
   const groups = downloadedFirst ? splitDownloaded(list) : [list];
@@ -108,7 +111,7 @@ export function LibraryPage() {
   } else if (list.length === 0) {
     body = (
       <EmptyState>
-        {dq || filter
+        {dq || filter || tag
           ? "No games match this search or filter."
           : "Your GOG library shows up here after the first sync finishes."}
       </EmptyState>
@@ -176,6 +179,17 @@ export function LibraryPage() {
             </option>
           ))}
         </select>
+        {/* The user's gog.com tags; the filter only shows up once there are some. */}
+        {(tags.length > 0 || tag) && (
+          <select className="select" value={tag} onChange={(e) => setTag(e.target.value)} aria-label="Filter by tag">
+            <option value="">Any tag</option>
+            {tags.map((t) => (
+              <option key={t.name} value={t.name}>
+                {withCount(t.name, t.count)}
+              </option>
+            ))}
+          </select>
+        )}
         <select className="select" value={sort} onChange={(e) => setSort(e.target.value as GameSort)} aria-label="Sort">
           <option value="title">Sort: Title</option>
           <option value="status">Sort: Status</option>
@@ -211,6 +225,20 @@ export function LibraryPage() {
 
       {body}
     </div>
+  );
+}
+
+/** The user's gog.com tags of a game, as small chips; nothing when it has none. */
+export function TagList({ tags }: { tags: string[] }) {
+  if (tags.length === 0) return null;
+  return (
+    <span className="tags">
+      {tags.map((t) => (
+        <span key={t} className="tag">
+          {t}
+        </span>
+      ))}
+    </span>
   );
 }
 
@@ -310,6 +338,7 @@ function GamesTable({
               </td>
               <td className="wrap">
                 <Link to={`/library/${g.id}`}>{g.title}</Link>
+                <TagList tags={g.tags} />
               </td>
               <td className="faint">{platformsText(g.works_on) || "—"}</td>
               <td className="num">

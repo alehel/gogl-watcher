@@ -287,7 +287,7 @@ func (s *Syncer) syncAll(ctx context.Context) error {
 			return err
 		}
 		if err := s.db.UpsertGame(ctx, db.Game{ID: g.ID, Title: g.Title, Slug: g.Slug, Image: g.Image, Folder: folder,
-			WorksWindows: g.WorksWindows, WorksMac: g.WorksMac, WorksLinux: g.WorksLinux}); err != nil {
+			WorksWindows: g.WorksWindows, WorksMac: g.WorksMac, WorksLinux: g.WorksLinux, Tags: g.Tags}); err != nil {
 			return err
 		}
 		ids = append(ids, g.ID)

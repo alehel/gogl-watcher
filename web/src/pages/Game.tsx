@@ -20,6 +20,7 @@ import { useGameSelection } from "../components/Selection";
 import { FileStatusDot, GameStatusDot, gameStatusTone } from "../components/StatusDot";
 import { useStatus } from "../components/StatusContext";
 import { useToastAction } from "../components/Toast";
+import { TagList } from "./Library";
 import { formatBytes, formatRelative, formatSpeed, platformLabel, platformsText, plural, ratio } from "../format";
 import { IconCheck } from "../components/Icons";
 import { useNow, usePolling, type PollingState } from "../hooks";
@@ -105,6 +106,7 @@ export function GamePage() {
             <GameStatusDot status={g.status} /> · {meta.join(" · ")}
           </div>
           <div className="mono path">{g.folder || "—"}</div>
+          <TagList tags={g.tags} />
           {g.files_total > 0 && (
             <ProgressBar line value={g.progress} tone={gameStatusTone(g.status)} label="Overall progress" />
           )}

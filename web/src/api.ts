@@ -130,6 +130,8 @@ export interface GameSummary {
   image: string | null;
   folder: string;
   works_on: WorksOn;
+  /** The user's own gog.com tags on the game, sorted. */
+  tags: string[];
   owned: boolean;
   /** Chosen for download; only meaningful when download_mode is "selected". */
   selected: boolean;
@@ -344,14 +346,23 @@ export const putSettings = (settings: Settings, onRemoved: OnRemoved = null) =>
 export const getLanguages = () => request<{ languages: LanguageOption[] }>("GET", "/api/settings/languages");
 
 // ---- Library ----
+/** One of the user's gog.com tags, with the number of owned games carrying it. */
+export interface Tag {
+  name: string;
+  count: number;
+}
+
 export interface GamesQuery {
   q?: string;
   status?: GameStatus | "";
+  /** Only games carrying this gog.com tag. */
+  tag?: string;
   sort?: GameSort;
   /** Lists games with files on disk before the rest; `sort` orders each group. */
   downloaded_first?: boolean;
 }
-export const getGames = (query: GamesQuery = {}) => request<{ games: GameSummary[] }>("GET", `/api/games${qs(query)}`);
+export const getGames = (query: GamesQuery = {}) =>
+  request<{ games: GameSummary[]; tags: Tag[] }>("GET", `/api/games${qs(query)}`);
 export const getGame = (id: number | string) => request<GameDetail>("GET", `/api/games/${id}`);
 export const getGameOffer = (id: number | string) => request<Offer>("GET", `/api/games/${id}/offer`);
 export const syncGame = (id: number | string) => request<{ ok: true }>("POST", `/api/games/${id}/sync`);

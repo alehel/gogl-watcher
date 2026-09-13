@@ -22,6 +22,8 @@ type ListedGame struct {
 	WorksWindows bool
 	WorksMac     bool
 	WorksLinux   bool
+	// Tags are the names of the user's own gog.com tags on the game, sorted.
+	Tags []string
 }
 
 // Product is the detailed view of a game or DLC including its downloads.

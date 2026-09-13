@@ -186,6 +186,14 @@ func TestSetupFlowAndSettings(t *testing.T) {
 	if n := len(out["games"].([]any)); n != 1 {
 		t.Errorf("filtered games = %d, want 1", n)
 	}
+	// The user's gog.com tags come with the listing and filter it.
+	if tags := out["tags"].([]any); len(tags) != 3 {
+		t.Errorf("tags = %v, want the three of the sample library", tags)
+	}
+	_, out = call(t, srv, "GET", "/api/games?tag=Favorite", nil)
+	if n := len(out["games"].([]any)); n != 2 {
+		t.Errorf("games tagged Favorite = %d, want 2", n)
+	}
 	// Pause/resume.
 	if code, out := call(t, srv, "POST", "/api/downloads/pause", nil); code != 200 || out["paused"] != true {
 		t.Errorf("pause: %d %v", code, out)

@@ -71,6 +71,11 @@ CREATE TABLE IF NOT EXISTS games (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS game_tags (
+  game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  tag TEXT NOT NULL,
+  PRIMARY KEY (game_id, tag)
+);
 CREATE TABLE IF NOT EXISTS products (
   id INTEGER PRIMARY KEY,
   game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
@@ -483,7 +488,8 @@ type Game struct {
 	WorksMac        bool
 	WorksLinux      bool
 	Owned           bool
-	Selected        bool // chosen for download (only matters in the "selected" download mode)
+	Tags            []string // the user's own gog.com tags on the game, sorted
+	Selected        bool     // chosen for download (only matters in the "selected" download mode)
 	DetailsSyncedAt *time.Time
 	DetailsError    string
 	CreatedAt       time.Time
@@ -522,16 +528,87 @@ type GameStats struct {
 	BytesDone    int64
 }
 
-// UpsertGame inserts or updates listing information. Folder is only set on insert.
+// UpsertGame inserts or updates listing information, tags included. Folder is
+// only set on insert.
 func (d *DB) UpsertGame(ctx context.Context, g Game) error {
 	now := time.Now().UnixMilli()
-	_, err := d.ExecContext(ctx, `INSERT INTO games(id, title, slug, image, folder, works_windows, works_mac, works_linux, owned, created_at, updated_at)
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `INSERT INTO games(id, title, slug, image, folder, works_windows, works_mac, works_linux, owned, created_at, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET title = excluded.title, slug = excluded.slug, image = excluded.image,
 		works_windows = excluded.works_windows, works_mac = excluded.works_mac, works_linux = excluded.works_linux,
 		owned = 1, updated_at = excluded.updated_at`,
 		g.ID, g.Title, g.Slug, g.Image, g.Folder, b2i(g.WorksWindows), b2i(g.WorksMac), b2i(g.WorksLinux), now, now)
-	return err
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM game_tags WHERE game_id = ?`, g.ID); err != nil {
+		return err
+	}
+	for _, t := range g.Tags {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO game_tags(game_id, tag) VALUES(?, ?)`, g.ID, t); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// loadTags attaches the tags of the given games.
+func (d *DB) loadTags(ctx context.Context, games []Game) error {
+	if len(games) == 0 {
+		return nil
+	}
+	byID := map[int64]*Game{}
+	args := make([]any, 0, len(games))
+	for i := range games {
+		byID[games[i].ID] = &games[i]
+		args = append(args, games[i].ID)
+	}
+	rows, err := d.QueryContext(ctx, `SELECT game_id, tag FROM game_tags WHERE game_id IN (`+placeholders(len(games))+`) ORDER BY tag COLLATE NOCASE`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var tag string
+		if err := rows.Scan(&id, &tag); err != nil {
+			return err
+		}
+		if g := byID[id]; g != nil {
+			g.Tags = append(g.Tags, tag)
+		}
+	}
+	return rows.Err()
+}
+
+// Tag is one of the user's gog.com tags with the number of owned games carrying it.
+type Tag struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+// ListTags returns every tag in use on an owned game, by name.
+func (d *DB) ListTags(ctx context.Context) ([]Tag, error) {
+	rows, err := d.QueryContext(ctx, `SELECT t.tag, COUNT(*) FROM game_tags t JOIN games g ON g.id = t.game_id
+		WHERE g.owned = 1 GROUP BY t.tag ORDER BY t.tag COLLATE NOCASE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Tag{}
+	for rows.Next() {
+		var t Tag
+		if err := rows.Scan(&t.Name, &t.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // FolderTaken reports whether another game already uses folder.
@@ -556,7 +633,12 @@ func (d *DB) GetGame(ctx context.Context, id int64) (*Game, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &g, nil
+	rows.Close()
+	gs := []Game{g}
+	if err := d.loadTags(ctx, gs); err != nil {
+		return nil, err
+	}
+	return &gs[0], nil
 }
 
 const gameSelect = `SELECT id, title, slug, image, box_art, box_art_checked_at, folder, works_windows, works_mac, works_linux, owned, selected, details_synced_at, details_error, created_at, updated_at FROM games`
@@ -598,7 +680,11 @@ func (d *DB) ListGames(ctx context.Context) ([]Game, error) {
 		}
 		out = append(out, g)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	return out, d.loadTags(ctx, out)
 }
 
 // SetGamesSelected marks the given games as selected (or not) for download.

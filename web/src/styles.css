@@ -712,6 +712,18 @@ input[type="radio"] {
   gap: 8px;
 }
 .game-info .path { color: var(--text-2); word-break: break-all; }
+/* The user's gog.com tags. */
+.tags { display: inline-flex; flex-wrap: wrap; gap: 4px; vertical-align: middle; margin-left: 8px; }
+.tag {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.game-info > .tags { display: flex; margin: 0; }
 .product .section-title .dlc { font-size: 11px; color: var(--text-3); margin-left: 6px; }
 
 /* ---- logs */ .log-list { font-family: var(--mono); font-size: 12px; border-top: 1px solid var(--border); }

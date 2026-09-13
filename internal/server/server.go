@@ -169,6 +169,7 @@ type gameSummary struct {
 	Image        string          `json:"image"`
 	Folder       string          `json:"folder"`
 	WorksOn      map[string]bool `json:"works_on"`
+	Tags         []string        `json:"tags"`
 	Owned        bool            `json:"owned"`
 	Selected     bool            `json:"selected"`
 	Status       string          `json:"status"`
@@ -185,9 +186,12 @@ type gameSummary struct {
 func (s *Server) summarize(g db.Game, st db.GameStats, active map[int64][]downloader.Progress, settings db.Settings) gameSummary {
 	out := gameSummary{
 		ID: g.ID, Title: g.Title, Slug: g.Slug, Image: g.Cover(), Folder: g.Folder,
-		WorksOn: worksOn(g),
-		Owned:   g.Owned, Selected: g.Selected, FilesTotal: st.FilesTotal, FilesDone: st.FilesDone, BytesTotal: st.BytesTotal, BytesDone: st.BytesDone,
+		WorksOn: worksOn(g), Tags: g.Tags,
+		Owned: g.Owned, Selected: g.Selected, FilesTotal: st.FilesTotal, FilesDone: st.FilesDone, BytesTotal: st.BytesTotal, BytesDone: st.BytesDone,
 		LastSyncedAt: g.DetailsSyncedAt, UpdatedAt: g.UpdatedAt, DetailsError: g.DetailsError,
+	}
+	if out.Tags == nil {
+		out.Tags = []string{} // a list, not null, for the UI
 	}
 	for _, p := range active[g.ID] {
 		out.BytesDone += p.Downloaded
@@ -469,6 +473,7 @@ func (s *Server) handleGames(w http.ResponseWriter, r *http.Request) {
 	}
 	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	status := r.URL.Query().Get("status")
+	tag := r.URL.Query().Get("tag")
 	filtered := sums[:0]
 	for _, g := range sums {
 		if q != "" && !strings.Contains(strings.ToLower(g.Title), q) {
@@ -477,10 +482,18 @@ func (s *Server) handleGames(w http.ResponseWriter, r *http.Request) {
 		if status != "" && status != "all" && g.Status != status {
 			continue
 		}
+		if tag != "" && !slices.Contains(g.Tags, tag) {
+			continue
+		}
 		filtered = append(filtered, g)
 	}
 	sortSummaries(filtered, r.URL.Query().Get("sort"), boolParam(r.URL.Query().Get("downloaded_first")))
-	writeJSON(w, http.StatusOK, map[string]any{"games": filtered})
+	tags, err := s.DB.ListTags(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"games": filtered, "tags": tags})
 }
 
 // sortSummaries orders the listing in place. The games arrive in title order, so "title"

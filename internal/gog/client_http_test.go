@@ -82,7 +82,7 @@ func TestExchangeRefreshAndList(t *testing.T) {
 	mux.HandleFunc("/embed.gog.com/account/getFilteredProducts", func(w http.ResponseWriter, r *http.Request) {
 		page := r.URL.Query().Get("page")
 		if page == "1" {
-			fmt.Fprint(w, `{"page":1,"totalPages":2,"products":[{"id":1,"title":"A","slug":"a","image":"//img/a","worksOn":{"Windows":true,"Mac":false,"Linux":true}}]}`)
+			fmt.Fprint(w, `{"page":1,"totalPages":2,"tags":[{"id":"10","name":"Favorite","productCount":"1"},{"id":"11","name":"Backlog","productCount":"1"}],"products":[{"id":1,"title":"A","slug":"a","image":"//img/a","worksOn":{"Windows":true,"Mac":false,"Linux":true},"tags":["11","10","99"]}]}`)
 		} else {
 			fmt.Fprint(w, `{"page":2,"totalPages":2,"products":[{"id":2,"title":"B","slug":"b","image":"//img/b","worksOn":{"Windows":true,"Mac":true,"Linux":false}}]}`)
 		}
@@ -129,6 +129,13 @@ func TestExchangeRefreshAndList(t *testing.T) {
 	games, err := c.ListGames(ctx, nil)
 	if err != nil || len(games) != 2 || games[1].Title != "B" || !games[0].WorksLinux {
 		t.Errorf("games = %+v, err = %v", games, err)
+	}
+	// Tag ids resolve to names, sorted; an id the catalogue lacks is dropped.
+	if got := games[0].Tags; len(got) != 2 || got[0] != "Backlog" || got[1] != "Favorite" {
+		t.Errorf("tags = %v, want [Backlog Favorite]", got)
+	}
+	if games[1].Tags != nil {
+		t.Errorf("untagged game has tags %v", games[1].Tags)
 	}
 	if games[0].Image != "https://img/a_392.jpg" {
 		t.Errorf("image = %q", games[0].Image)
