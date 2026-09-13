@@ -23,6 +23,7 @@ import {
   RemovalConfirmModal,
 } from "../components/SettingsFields";
 import { useStatus } from "../components/StatusContext";
+import { UnsavedChangesGuard } from "../components/UnsavedChanges";
 import { useToast, useToastAction } from "../components/Toast";
 import { kbpsToMbps, mbpsToKbps } from "../format";
 import { useAsync } from "../hooks";
@@ -162,6 +163,7 @@ function SettingsForm({
 
   return (
     <>
+      <UnsavedChangesGuard when={dirty && !busy} />
       <div>
         <section className="form-section">
           <h2>Games</h2>
