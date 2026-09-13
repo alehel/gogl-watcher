@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -635,11 +634,10 @@ func (m *Manager) trackSpeed(ctx context.Context, t *transfer) func() {
 }
 
 func (m *Manager) checkSpace(path string, need int64) error {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(filepath.Dir(path), &st); err != nil {
+	free, total := library.DiskUsage(filepath.Dir(path))
+	if total == 0 {
 		return nil // unknown filesystem, do not block
 	}
-	free := int64(st.Bavail) * int64(st.Bsize)
 	if need > 0 && free < need+(256<<20) {
 		return fmt.Errorf("insufficient disk space: need %d bytes, %d free", need, free)
 	}

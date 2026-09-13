@@ -15,7 +15,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/alehel/gogl-watcher/internal/db"
@@ -297,7 +296,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if queued < 0 {
 		queued = 0
 	}
-	free, total := diskUsage(s.LibraryDir)
+	free, total := library.DiskUsage(s.LibraryDir)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":        s.Version,
 		"setup_complete": complete,
@@ -312,14 +311,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"library": lib,
 		"disk":    map[string]any{"library_dir": s.LibraryDir, "free_bytes": free, "total_bytes": total},
 	})
-}
-
-func diskUsage(dir string) (free, total int64) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
-		return 0, 0
-	}
-	return int64(st.Bavail) * int64(st.Bsize), int64(st.Blocks) * int64(st.Bsize)
 }
 
 // ---- auth ----
