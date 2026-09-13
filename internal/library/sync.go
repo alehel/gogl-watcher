@@ -643,7 +643,7 @@ func (s *Syncer) syncGame(ctx context.Context, id int64, owned gog.OwnedSet, set
 	planned := Plan(*game, p, owned, settings)
 	verify := s.verifier(*game, suspect, rolling)
 	var keep []int64
-	added, updated := 0, 0
+	added, updated, changed := 0, 0, 0
 	for _, pp := range planned {
 		if err := s.db.UpsertProduct(ctx, pp.Product); err != nil {
 			return err
@@ -664,6 +664,7 @@ func (s *Syncer) syncGame(ctx context.Context, id int64, owned gog.OwnedSet, set
 			if res.Changed {
 				// A transfer of the old version may be running; it must not finish
 				// under the new one, and its partial file is of no use.
+				changed++
 				s.abortTransfer(res.ID, res.LocalPath)
 			}
 		}
@@ -677,8 +678,11 @@ func (s *Syncer) syncGame(ctx context.Context, id int64, owned gog.OwnedSet, set
 		// an orphan behind.
 		s.abortTransfer(f.ID, f.LocalPath)
 	}
-	if added > 0 || updated > 0 || len(dropped) > 0 {
-		s.log.Info("game synced", "game", game.Title, "new_files", added, "updated_files", updated, "dropped_files", len(dropped))
+	if added > 0 || updated > 0 || changed > 0 || len(dropped) > 0 {
+		s.log.Info("game synced", "game", game.Title, "new_files", added, "updated_files", updated, "changed_files", changed, "dropped_files", len(dropped))
+		if err := s.db.TouchGame(ctx, id); err != nil {
+			return err
+		}
 	} else {
 		s.log.Debug("game unchanged", "game", game.Title)
 	}

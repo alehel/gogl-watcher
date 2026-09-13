@@ -376,3 +376,40 @@ func TestNewBuildOfFailedFileIsReportedAsChanged(t *testing.T) {
 		t.Errorf("deferred file: %+v", row)
 	}
 }
+
+// A game the account no longer owns cannot be downloaded from GOG; its pending
+// files wait instead of failing, and are picked up again once it is owned again.
+func TestNextPendingFilesSkipsGamesNotOwned(t *testing.T) {
+	d := openTest(t)
+	ctx := context.Background()
+	for _, id := range []int64{1, 2} {
+		if err := d.UpsertGame(ctx, Game{ID: id, Title: "Game", Folder: "Game"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.UpsertProduct(ctx, Product{ID: id, GameID: id, Title: "Game"}); err != nil {
+			t.Fatal(err)
+		}
+		f := File{GameID: id, ProductID: id, Kind: "installer", OS: "windows", Language: "en", GogID: "a", Name: "Game", Version: "1", Size: 1, Downlink: "x", RelDir: "windows"}
+		if _, err := d.UpsertDesiredFile(ctx, f, func(string) bool { return false }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Game 2 has left the account.
+	if err := d.MarkGamesNotOwned(ctx, []int64{1}); err != nil {
+		t.Fatal(err)
+	}
+	next, err := d.NextPendingFiles(ctx, 10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next) != 1 || next[0].GameID != 1 {
+		t.Fatalf("queue = %+v, want only game 1's file", next)
+	}
+	// It is listed again: its file is downloadable once more.
+	if err := d.UpsertGame(ctx, Game{ID: 2, Title: "Game", Folder: "Game"}); err != nil {
+		t.Fatal(err)
+	}
+	if next, _ = d.NextPendingFiles(ctx, 10, nil); len(next) != 2 {
+		t.Fatalf("queue = %+v, want both files", next)
+	}
+}

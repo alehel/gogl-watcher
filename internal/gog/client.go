@@ -55,6 +55,13 @@ type TokenStore interface {
 	Clear(ctx context.Context) error
 }
 
+// persist is the context a token set is written to the store with: the values
+// of ctx, but not its cancellation. A refresh rotates the refresh token, so a
+// write that fails because the request that needed the token was cancelled
+// meanwhile would leave the only valid token in memory, and the next restart
+// would find a session GOG no longer accepts.
+func persist(ctx context.Context) context.Context { return context.WithoutCancel(ctx) }
+
 // Client is the real GOG client.
 type Client struct {
 	http      *http.Client
@@ -155,7 +162,11 @@ func (c *Client) ExchangeCode(ctx context.Context, input string) (*User, error) 
 	c.mu.Lock()
 	c.token = t
 	c.mu.Unlock()
-	if err := c.store.Save(ctx, t); err != nil {
+	// GOG has consumed the one-time code by now, and every refresh from here on
+	// rotates the refresh token: a token set that is not written down is a session
+	// lost at the next restart. So the writes must not fail with the caller, which
+	// may be a browser that closed the tab or a transfer that was just cancelled.
+	if err := c.store.Save(persist(ctx), t); err != nil {
 		return nil, err
 	}
 	// Fetch the username; failure here is not fatal.
@@ -180,7 +191,7 @@ func (c *Client) ExchangeCode(ctx context.Context, input string) (*User, error) 
 	c.token.UserID = userID
 	live := c.token
 	c.mu.Unlock()
-	if err := c.store.Save(ctx, live); err != nil {
+	if err := c.store.Save(persist(ctx), live); err != nil {
 		return nil, err
 	}
 	c.log.Info("authorized with GOG", "user", live.Username)
@@ -322,7 +333,7 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 		var ae *AuthError
 		if errors.As(rerr, &ae) && ae.Permanent {
 			c.token.Error = "GOG session expired, please authorize again (" + ae.Msg + ")"
-			_ = c.store.Save(ctx, c.token)
+			_ = c.store.Save(persist(ctx), c.token)
 			c.log.Error("refresh token rejected, re-authorization required", "error", ae.Msg)
 			return "", &AuthError{Msg: c.token.Error, Permanent: true}
 		}
@@ -336,7 +347,8 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 		c.token.UserID = tr.UserID
 	}
 	c.token.ExpiresAt = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)
-	if err := c.store.Save(ctx, c.token); err != nil {
+	// The old refresh token is gone the moment GOG answered; see ExchangeCode.
+	if err := c.store.Save(persist(ctx), c.token); err != nil {
 		return "", err
 	}
 	c.log.Debug("refreshed GOG access token")

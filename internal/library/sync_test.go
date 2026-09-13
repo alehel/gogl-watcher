@@ -581,3 +581,57 @@ func TestGameOptsIntoExtrasOnItsOwn(t *testing.T) {
 		t.Fatalf("%d extras still tracked after the game opted out", n)
 	}
 }
+
+// The library can be ordered by "recently updated", which has to mean that a
+// sync found something new for the game: every sync lists and details every
+// game, so a timestamp that moved with the sync would order the games by the
+// sync's whims, not by their updates.
+func TestSyncMovesUpdatedAtOnlyWhenTheGameChanged(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	d, syncer, _ := newSyncTest(t, m)
+	ctx := context.Background()
+	saveSettings(t, d, "windows")
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stamps := func() map[int64]time.Time {
+		games, _ := d.ListGames(ctx)
+		out := map[int64]time.Time{}
+		for _, g := range games {
+			out[g.ID] = g.UpdatedAt
+		}
+		return out
+	}
+	first := stamps()
+	if len(first) == 0 {
+		t.Fatal("no games")
+	}
+	time.Sleep(5 * time.Millisecond) // the stamps have millisecond resolution
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for id, at := range stamps() {
+		if !at.Equal(first[id]) {
+			t.Errorf("game %d: updated_at moved from %v to %v although nothing changed", id, first[id], at)
+		}
+	}
+
+	// GOG publishes a new build of one game: that game, and only that game, is updated.
+	changed := m.Games[0].Listed.ID
+	inst := &m.Games[0].Product.Downloads.Installers[0]
+	inst.Version += "-new"
+	time.Sleep(5 * time.Millisecond)
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for id, at := range stamps() {
+		moved := !at.Equal(first[id])
+		if id == changed && !moved {
+			t.Errorf("updated game %d kept updated_at %v", id, at)
+		}
+		if id != changed && moved {
+			t.Errorf("game %d: updated_at moved to %v although only game %d changed", id, at, changed)
+		}
+	}
+}
