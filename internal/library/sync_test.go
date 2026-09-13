@@ -527,3 +527,57 @@ func TestSelectedNewModeSelectsGamesThatAppearLater(t *testing.T) {
 		}
 	}
 }
+
+// A game can opt in to extras (and DLC) on its own while the settings leave them
+// out for the library; opting out again drops the files it no longer wants.
+func TestGameOptsIntoExtrasOnItsOwn(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	d, syncer, _ := newSyncTest(t, m)
+	s := saveSettings(t, d, "windows")
+	s.IncludeExtras = false
+	_ = d.SaveSettings(context.Background(), s)
+	const witcher = 1207658924
+	ctx := context.Background()
+
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	extras := func() int {
+		files, _ := d.ListActiveFilesByGame(ctx, witcher)
+		n := 0
+		for _, f := range files {
+			if f.Kind == "extra" {
+				n++
+			}
+		}
+		return n
+	}
+	if n := extras(); n != 0 {
+		t.Fatalf("%d extras planned although extras are off", n)
+	}
+
+	if err := syncer.SetGameOptions(ctx, witcher, false, true, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.SyncGame(ctx, witcher); err != nil {
+		t.Fatal(err)
+	}
+	if n := extras(); n == 0 {
+		t.Fatal("no extras planned after the game opted in")
+	}
+	// Turning extras off for the library leaves an opted-in game alone.
+	if err := syncer.ApplySettings(ctx, s, ""); err != nil {
+		t.Fatal(err)
+	}
+	if n := extras(); n == 0 {
+		t.Fatal("re-applying the library settings dropped the game's own extras")
+	}
+
+	if err := syncer.SetGameOptions(ctx, witcher, false, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if n := extras(); n != 0 {
+		t.Fatalf("%d extras still tracked after the game opted out", n)
+	}
+}

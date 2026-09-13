@@ -17,6 +17,7 @@ import { ApiErrorNotice, CoverImage, EmptyState, Loading, Spinner, TimeAgo } fro
 import { DataTable } from "../components/DataTable";
 import { IconBack } from "../components/Icons";
 import { ProgressBar } from "../components/ProgressBar";
+import { useGameOptions } from "../components/GameOptions";
 import { useGameSelection } from "../components/Selection";
 import { FileStatusDot, GameStatusDot, gameStatusTone } from "../components/StatusDot";
 import { useStatus } from "../components/StatusContext";
@@ -44,6 +45,10 @@ export function GamePage() {
     refreshStatus();
   });
   const selectedOnly = selectsGames(status?.library.download_mode);
+  const options = useGameOptions(id, game.refresh);
+  // A game can opt in to what the library-wide settings leave out.
+  const canOptDLC = status ? !status.library.include_dlc : false;
+  const canOptExtras = status ? !status.library.include_extras : false;
 
   const back = (
     <Link to="/library" className="back">
@@ -96,6 +101,7 @@ export function GamePage() {
       <div>{back}</div>
       <ApiErrorNotice error={game.error} stale />
       {selection.modal}
+      {options.modal}
 
       <div className="game-head">
         <div className="game-cover">
@@ -143,6 +149,43 @@ export function GamePage() {
           </div>
         </div>
       </div>
+
+      {(canOptDLC || canOptExtras) && (
+        <div className="check-list game-options" role="group" aria-label="Extra content for this game">
+          {canOptDLC && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={g.include_dlc}
+                disabled={options.busy}
+                onChange={(e) =>
+                  void options.setOptions({ include_dlc: e.target.checked, include_extras: g.include_extras })
+                }
+              />
+              <span>
+                Also download DLC for this game
+                <span className="desc">The library settings leave DLC out; this game gets it anyway.</span>
+              </span>
+            </label>
+          )}
+          {canOptExtras && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={g.include_extras}
+                disabled={options.busy}
+                onChange={(e) =>
+                  void options.setOptions({ include_dlc: g.include_dlc, include_extras: e.target.checked })
+                }
+              />
+              <span>
+                Also download extras for this game
+                <span className="desc">Soundtracks, manuals, wallpapers and the like, for this game only.</span>
+              </span>
+            </label>
+          )}
+        </div>
+      )}
 
       {unselected && (
         <>

@@ -19,6 +19,7 @@ type PlannedProduct struct {
 // Plan computes which files of a product (and its owned DLC) should exist locally
 // under the given settings. owned may be nil, in which case all DLC count as owned.
 func Plan(game db.Game, p *gog.Product, owned gog.OwnedSet, s db.Settings) []PlannedProduct {
+	s = s.ForGame(game)
 	var out []PlannedProduct
 	base := PlannedProduct{Product: db.Product{ID: p.ID, GameID: game.ID, Title: cmp.Or(p.Title, game.Title), IsDLC: false}}
 	base.Files = planFiles(game.ID, p.ID, p.Downloads, "", s)

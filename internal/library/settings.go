@@ -42,6 +42,7 @@ func unwantedReason(f db.File, game db.Game, isDLC bool, s db.Settings) string {
 	if !s.WantsGame(game) {
 		return ReasonUnselected
 	}
+	s = s.ForGame(game)
 	if isDLC && !s.IncludeDLC {
 		return "dlc"
 	}
@@ -79,15 +80,14 @@ func (s *Syncer) findUnwanted(ctx context.Context, ns db.Settings) ([]unwanted, 
 	if err != nil {
 		return nil, err
 	}
+	// The games carry their selection and their own DLC and extras opt-ins.
 	games := map[int64]db.Game{}
-	if ns.SelectedOnly() {
-		all, err := s.db.ListGames(ctx)
-		if err != nil {
-			return nil, err
-		}
-		for _, g := range all {
-			games[g.ID] = g
-		}
+	all, err := s.db.ListGames(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, g := range all {
+		games[g.ID] = g
 	}
 	dlc := map[int64]bool{}
 	seen := map[int64]bool{}
@@ -234,6 +234,57 @@ func (s *Syncer) ApplySettings(ctx context.Context, ns db.Settings, onRemoved Re
 		return err
 	}
 	return s.db.SaveSettings(ctx, ns)
+}
+
+// SetGameOptions opts one game in to (or out of) DLC and extras regardless of
+// the library-wide settings. Opting out drops the files it no longer wants like
+// a settings change does: onRemoved must be answered when downloaded files are
+// affected. Opting in never touches files; the caller syncs the game afterwards
+// so they get planned.
+func (s *Syncer) SetGameOptions(ctx context.Context, id int64, dlc, extras bool, onRemoved RemovalAction) error {
+	defer s.lockGame(id)()
+	game, err := s.db.GetGame(ctx, id)
+	if err != nil {
+		return err
+	}
+	if game == nil {
+		return ErrGameNotFound
+	}
+	settings, err := s.db.GetSettings(ctx)
+	if err != nil {
+		return err
+	}
+	game.IncludeDLC, game.IncludeExtras = dlc, extras
+	files, err := s.db.ListActiveFilesByGame(ctx, id)
+	if err != nil {
+		return err
+	}
+	prods, err := s.db.ListProducts(ctx, id)
+	if err != nil {
+		return err
+	}
+	isDLC := map[int64]bool{}
+	for _, p := range prods {
+		isDLC[p.ID] = p.IsDLC
+	}
+	var list []unwanted
+	for _, f := range files {
+		if r := unwantedReason(f, *game, isDLC[f.ProductID], settings); r != "" {
+			list = append(list, unwanted{f, r})
+		}
+	}
+	if err := s.dropFiles(ctx, list, onRemoved, "changing the game's options"); err != nil {
+		return err
+	}
+	if err := s.db.SetGameOptions(ctx, id, dlc, extras); err != nil {
+		return err
+	}
+	// The cached offer marked what the old options would download.
+	s.offerMu.Lock()
+	delete(s.offers, id)
+	s.offerMu.Unlock()
+	s.log.Info("game options changed", "game", game.Title, "dlc", dlc, "extras", extras)
+	return nil
 }
 
 // SetSelection marks games as selected for download or not. Deselecting a game

@@ -150,6 +150,12 @@ func (d *DB) migrate() error {
 	if err := d.addColumn("games", "box_art_checked_at", "INTEGER"); err != nil {
 		return err
 	}
+	if err := d.addColumn("games", "include_dlc", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := d.addColumn("games", "include_extras", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	return d.migrateDownloadMode()
 }
 
@@ -366,6 +372,14 @@ func (s Settings) WantsGame(g Game) bool {
 	return !s.SelectedOnly() || g.Selected
 }
 
+// ForGame returns the settings as they apply to one game: the library-wide
+// settings, with DLC and extras switched on where the game opted in.
+func (s Settings) ForGame(g Game) Settings {
+	s.IncludeDLC = s.IncludeDLC || g.IncludeDLC
+	s.IncludeExtras = s.IncludeExtras || g.IncludeExtras
+	return s
+}
+
 // WantsPlatform reports whether os is selected.
 func (s Settings) WantsPlatform(os string) bool { return slices.Contains(s.Platforms, os) }
 
@@ -498,6 +512,10 @@ type Game struct {
 	Owned           bool
 	Tags            []string // the user's own gog.com tags on the game, sorted
 	Selected        bool     // chosen for download (only matters in the "selected" download mode)
+	// IncludeDLC and IncludeExtras opt this game into DLC and extras when the
+	// settings leave them out for the library as a whole.
+	IncludeDLC      bool
+	IncludeExtras   bool
 	DetailsSyncedAt *time.Time
 	DetailsError    string
 	CreatedAt       time.Time
@@ -667,18 +685,19 @@ func (d *DB) GetGame(ctx context.Context, id int64) (*Game, error) {
 	return &gs[0], nil
 }
 
-const gameSelect = `SELECT id, title, slug, image, box_art, box_art_checked_at, folder, works_windows, works_mac, works_linux, owned, selected, details_synced_at, details_error, created_at, updated_at FROM games`
+const gameSelect = `SELECT id, title, slug, image, box_art, box_art_checked_at, folder, works_windows, works_mac, works_linux, owned, selected, include_dlc, include_extras, details_synced_at, details_error, created_at, updated_at FROM games`
 
 func scanGame(rows *sql.Rows) (Game, error) {
 	var g Game
-	var ww, wm, wl, owned, selected int
+	var ww, wm, wl, owned, selected, dlc, extras int
 	var synced, artChecked sql.NullInt64
 	var created, updated int64
-	err := rows.Scan(&g.ID, &g.Title, &g.Slug, &g.Image, &g.BoxArt, &artChecked, &g.Folder, &ww, &wm, &wl, &owned, &selected, &synced, &g.DetailsError, &created, &updated)
+	err := rows.Scan(&g.ID, &g.Title, &g.Slug, &g.Image, &g.BoxArt, &artChecked, &g.Folder, &ww, &wm, &wl, &owned, &selected, &dlc, &extras, &synced, &g.DetailsError, &created, &updated)
 	if err != nil {
 		return g, err
 	}
 	g.WorksWindows, g.WorksMac, g.WorksLinux, g.Owned, g.Selected = ww == 1, wm == 1, wl == 1, owned == 1, selected == 1
+	g.IncludeDLC, g.IncludeExtras = dlc == 1, extras == 1
 	if synced.Valid {
 		t := time.UnixMilli(synced.Int64)
 		g.DetailsSyncedAt = &t
@@ -723,6 +742,13 @@ func (d *DB) SetGamesSelected(ctx context.Context, ids []int64, selected bool) e
 		args = append(args, id)
 	}
 	_, err := d.ExecContext(ctx, `UPDATE games SET selected = ?, updated_at = ? WHERE id IN (`+placeholders(len(ids))+`)`, args...)
+	return err
+}
+
+// SetGameOptions stores a game's own DLC and extras opt-ins.
+func (d *DB) SetGameOptions(ctx context.Context, id int64, dlc, extras bool) error {
+	_, err := d.ExecContext(ctx, `UPDATE games SET include_dlc = ?, include_extras = ?, updated_at = ? WHERE id = ?`,
+		b2i(dlc), b2i(extras), time.Now().UnixMilli(), id)
 	return err
 }
 

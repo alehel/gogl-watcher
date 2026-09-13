@@ -57,6 +57,9 @@ export interface LibraryTotals {
   unsynced: number;
   unselected: number;
   download_mode: DownloadMode;
+  /** The library-wide DLC and extras settings; a game can opt in on its own when they are off. */
+  include_dlc: boolean;
+  include_extras: boolean;
   bytes_total: number;
   bytes_done: number;
 }
@@ -137,6 +140,9 @@ export interface GameSummary {
   owned: boolean;
   /** Chosen for download; only meaningful when the download mode selects games. */
   selected: boolean;
+  /** The game's own DLC and extras opt-ins; they matter when the library-wide setting is off. */
+  include_dlc: boolean;
+  include_extras: boolean;
   status: GameStatus;
   files_total: number;
   files_done: number;
@@ -367,6 +373,12 @@ export const getGames = (query: GamesQuery = {}) =>
   request<{ games: GameSummary[]; tags: Tag[] }>("GET", `/api/games${qs(query)}`);
 export const getGame = (id: number | string) => request<GameDetail>("GET", `/api/games/${id}`);
 export const getGameOffer = (id: number | string) => request<Offer>("GET", `/api/games/${id}/offer`);
+/** Opts a game in to or out of DLC and extras on its own. Opting out of downloaded files needs `onRemoved` (409 otherwise). */
+export const setGameOptions = (
+  id: number | string,
+  options: { include_dlc: boolean; include_extras: boolean },
+  onRemoved: OnRemoved = null,
+) => request<{ ok: true }>("PUT", `/api/games/${id}/options`, { ...options, on_removed: onRemoved });
 export const syncGame = (id: number | string) => request<{ ok: true }>("POST", `/api/games/${id}/sync`);
 export const retryGame = (id: number | string) => request<{ ok: true }>("POST", `/api/games/${id}/retry`);
 export const retryFile = (id: number | string) => request<{ ok: true }>("POST", `/api/files/${id}/retry`);
