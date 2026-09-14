@@ -331,6 +331,15 @@ func (s *Syncer) syncAll(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Check the mount before planning against local paths. Otherwise an empty
+	// mount makes every completed file look missing and queues the whole library.
+	if counts, err := s.db.CountFilesByStatus(ctx); err != nil {
+		return err
+	} else if counts[db.StatusDone] > 0 {
+		if _, err := s.CheckMissing(ctx); err != nil {
+			return err
+		}
+	}
 	s.rollingLeft.Store(verifyBudget)
 	s.log.Info("library sync started")
 	owned, err := s.gog.OwnedIDs(ctx)

@@ -360,7 +360,7 @@ func (m *Manager) remote(ctx context.Context, f db.File) (*gog.Downlink, target,
 // resolve fills in what only the open transfer can say — the name may still have
 // to come from its headers — and with a name, the paths.
 func (t target) resolve(f db.File, game db.Game, dl *gog.Download, paths library.Paths) target {
-	t.name = library.SanitizeFolder(cmp.Or(t.name, dl.Filename, fmt.Sprintf("%s_%s", library.SanitizeFolder(f.Name), f.GogID)))
+	t.name = library.SanitizeFilename(cmp.Or(t.name, dl.Filename, fmt.Sprintf("%s_%s", library.SanitizeFolder(f.Name), f.GogID)))
 	if dl.Length > 0 {
 		t.size = dl.Length
 	}
@@ -419,13 +419,15 @@ func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error
 	// Already complete on disk (e.g. after a database reset)? Verify and finish.
 	if st, err := os.Stat(tgt.abs); err == nil && tgt.size > 0 && st.Size() == tgt.size {
 		dl.Body.Close()
-		if tgt.finished() {
+		// Size alone cannot identify a replacement whose old version occupies
+		// this same path. Without a checksum, fetch it even if the size matches.
+		if (tgt.md5 != "" || f.PreviousPath != tgt.rel) && tgt.finished() {
 			m.log.Info("file already present, skipping download", "game", game.Title, "file", tgt.name)
 			_, err := m.complete(ctx, f, tgt.rel, tgt.size, game.Title)
 			return err
 		}
-		m.log.Warn("file on disk does not match GOG's checksum, downloading again", "game", game.Title, "file", tgt.name)
-		_ = os.Remove(tgt.abs)
+		m.log.Info("replacing file on disk", "game", game.Title, "file", tgt.name)
+		// Keep the existing installer until the verified .part replaces it.
 		// The transfer was closed while hashing; open it again for the download.
 		if dl, err = openWithOffset(0); err != nil {
 			return fmt.Errorf("opening download: %w", err)

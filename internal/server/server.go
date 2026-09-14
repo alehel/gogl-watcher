@@ -87,7 +87,8 @@ func sameSiteOnly(next http.Handler) http.Handler {
 					writeError(w, http.StatusForbidden, "cross-site requests are not allowed")
 					return
 				}
-			} else if origin := r.Header.Get("Origin"); origin != "" && origin != "null" {
+			}
+			if origin := r.Header.Get("Origin"); origin != "" && origin != "null" {
 				// Older browsers: fall back to comparing the origin with the host the
 				// request was addressed to (also as seen by a reverse proxy).
 				u, err := url.Parse(origin)
