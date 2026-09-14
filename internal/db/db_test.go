@@ -444,3 +444,36 @@ func TestSetFileErrorLeavesDroppedRowsAlone(t *testing.T) {
 		}
 	}
 }
+
+// "Keep" answered while an update is transferring keeps what was on disk when
+// the question was asked, the previous version: the transfer that finishes
+// afterwards must not turn the kept row into a done copy of the new build.
+func TestCompleteFileRefusesDroppedRow(t *testing.T) {
+	d := openTest(t)
+	ctx := context.Background()
+	if err := d.UpsertGame(ctx, Game{ID: 1, Title: "Game", Folder: "Game"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpsertProduct(ctx, Product{ID: 1, GameID: 1, Title: "Game"}); err != nil {
+		t.Fatal(err)
+	}
+	f := File{GameID: 1, ProductID: 1, Kind: "installer", OS: "windows", Language: "en", GogID: "a", Name: "Game", Version: "1", Size: 1, Downlink: "x", RelDir: "windows"}
+	res, err := d.UpsertDesiredFile(ctx, f, func(string) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetFileInactive(ctx, res.ID); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := d.CompleteFile(ctx, res.ID, "Game/windows/setup.exe", 1, "x", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("a dropped row must not be completed")
+	}
+	got, _ := d.GetFile(ctx, res.ID)
+	if got.Active || got.Status != StatusInactive || got.LocalPath != "" {
+		t.Errorf("row changed: %+v", got)
+	}
+}

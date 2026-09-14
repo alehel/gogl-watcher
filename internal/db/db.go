@@ -1258,12 +1258,14 @@ func (d *DB) SetFileDone(ctx context.Context, id int64, localPath string, size i
 }
 
 // CompleteFile marks a download complete like SetFileDone, but only if the row
-// still describes the download that was made (same download link and version).
-// It reports false when the file was updated on GOG in the meantime; the row is
-// then left pending for the new version.
+// still wants the download that was made: it is active and describes the same
+// download link and version. It reports false when the file was updated on GOG
+// in the meantime (the row is then left pending for the new version), or when
+// the file stopped being wanted while it transferred (the row was dropped, or
+// kept as it was when the user answered "keep": the previous version).
 func (d *DB) CompleteFile(ctx context.Context, id int64, localPath string, size int64, downlink, version string) (bool, error) {
 	now := time.Now().UnixMilli()
-	res, err := d.ExecContext(ctx, `UPDATE files `+fileDoneSet+` WHERE id = ? AND downlink = ? AND version = ?`,
+	res, err := d.ExecContext(ctx, `UPDATE files `+fileDoneSet+` WHERE id = ? AND active = 1 AND downlink = ? AND version = ?`,
 		localPath, size, now, now, now, id, downlink, version)
 	if err != nil {
 		return false, err
