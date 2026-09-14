@@ -213,6 +213,13 @@ function SettingsForm({
               desc="Soundtracks, manuals, wallpapers and other bonus content."
               disabled={busy}
             />
+            <Checkbox
+              checked={form.include_saves}
+              onChange={(v) => set("include_saves", v)}
+              label="Include cloud saves"
+              desc="A copy of the save games GOG Galaxy keeps in the cloud, for the games that have any. The newest version is kept, in the game's saves folder."
+              disabled={busy}
+            />
           </div>
         </section>
         <section className="form-section">

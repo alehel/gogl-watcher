@@ -14,6 +14,7 @@ import { useToast } from "./Toast";
 export interface GameOptionsValue {
   include_dlc: boolean;
   include_extras: boolean;
+  include_saves: boolean;
 }
 
 interface Pending {
@@ -22,7 +23,7 @@ interface Pending {
 }
 
 /**
- * Opts one game in to or out of DLC and extras on its own. Opting out of downloaded
+ * Opts one game in to or out of DLC, extras and cloud saves on its own. Opting out of downloaded
  * files makes the backend ask whether to keep or delete them; the hook shows that
  * dialog and re-submits with the answer. Render `modal` somewhere in the page.
  */

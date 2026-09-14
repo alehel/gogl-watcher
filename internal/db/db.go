@@ -122,6 +122,14 @@ CREATE TABLE IF NOT EXISTS game_builds (
   checked_at INTEGER NOT NULL,
   PRIMARY KEY (game_id, os)
 );
+CREATE TABLE IF NOT EXISTS game_clients (
+  game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  os TEXT NOT NULL,
+  client_id TEXT NOT NULL DEFAULT '',
+  client_secret TEXT NOT NULL DEFAULT '',
+  checked_at INTEGER NOT NULL,
+  PRIMARY KEY (game_id, os)
+);
 CREATE TABLE IF NOT EXISTS logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,
@@ -154,6 +162,9 @@ func (d *DB) migrate() error {
 		return err
 	}
 	if err := d.addColumn("games", "include_extras", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := d.addColumn("games", "include_saves", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	return d.migrateDownloadMode()
@@ -250,17 +261,19 @@ func NormalizePlatform(os string) string {
 // Settings are the user-editable options shown in the UI.
 type Settings struct {
 	// DownloadMode is "all" or "selected"; empty until the setup wizard asked.
-	DownloadMode           string   `json:"download_mode"`
-	Platforms              []string `json:"platforms"`
-	Languages              []string `json:"languages"`
-	LanguageFallback       bool     `json:"language_fallback"`
-	ContentChosen          bool     `json:"content_chosen"`
-	IncludeDLC             bool     `json:"include_dlc"`
-	IncludeExtras          bool     `json:"include_extras"`
-	MaxConcurrentDownloads int      `json:"max_concurrent_downloads"`
-	SpeedLimitKBps         int      `json:"speed_limit_kbps"`
-	CheckIntervalHours     int      `json:"check_interval_hours"`
-	DownloadsPaused        bool     `json:"downloads_paused"`
+	DownloadMode     string   `json:"download_mode"`
+	Platforms        []string `json:"platforms"`
+	Languages        []string `json:"languages"`
+	LanguageFallback bool     `json:"language_fallback"`
+	ContentChosen    bool     `json:"content_chosen"`
+	IncludeDLC       bool     `json:"include_dlc"`
+	IncludeExtras    bool     `json:"include_extras"`
+	// IncludeSaves backs up the cloud saves of the games that have any.
+	IncludeSaves           bool `json:"include_saves"`
+	MaxConcurrentDownloads int  `json:"max_concurrent_downloads"`
+	SpeedLimitKBps         int  `json:"speed_limit_kbps"`
+	CheckIntervalHours     int  `json:"check_interval_hours"`
+	DownloadsPaused        bool `json:"downloads_paused"`
 }
 
 // DefaultSettings returns the settings used before the user configured anything.
@@ -352,7 +365,8 @@ func (s Settings) SamePlan(o Settings) bool {
 	return s.DownloadMode == o.DownloadMode &&
 		strings.Join(s.Platforms, ",") == strings.Join(o.Platforms, ",") &&
 		strings.Join(s.Languages, ",") == strings.Join(o.Languages, ",") &&
-		s.LanguageFallback == o.LanguageFallback && s.IncludeDLC == o.IncludeDLC && s.IncludeExtras == o.IncludeExtras
+		s.LanguageFallback == o.LanguageFallback && s.IncludeDLC == o.IncludeDLC && s.IncludeExtras == o.IncludeExtras &&
+		s.IncludeSaves == o.IncludeSaves
 }
 
 // SelectedOnly reports whether only selected games are downloaded (whether the
@@ -373,10 +387,11 @@ func (s Settings) WantsGame(g Game) bool {
 }
 
 // ForGame returns the settings as they apply to one game: the library-wide
-// settings, with DLC and extras switched on where the game opted in.
+// settings, with DLC, extras and cloud saves switched on where the game opted in.
 func (s Settings) ForGame(g Game) Settings {
 	s.IncludeDLC = s.IncludeDLC || g.IncludeDLC
 	s.IncludeExtras = s.IncludeExtras || g.IncludeExtras
+	s.IncludeSaves = s.IncludeSaves || g.IncludeSaves
 	return s
 }
 
@@ -512,10 +527,11 @@ type Game struct {
 	Owned           bool
 	Tags            []string // the user's own gog.com tags on the game, sorted
 	Selected        bool     // chosen for download (only matters in the "selected" download mode)
-	// IncludeDLC and IncludeExtras opt this game into DLC and extras when the
-	// settings leave them out for the library as a whole.
+	// IncludeDLC, IncludeExtras and IncludeSaves opt this game into DLC, extras
+	// and cloud saves when the settings leave them out for the library as a whole.
 	IncludeDLC      bool
 	IncludeExtras   bool
+	IncludeSaves    bool
 	DetailsSyncedAt *time.Time
 	DetailsError    string
 	CreatedAt       time.Time
@@ -689,19 +705,19 @@ func (d *DB) GetGame(ctx context.Context, id int64) (*Game, error) {
 	return &gs[0], nil
 }
 
-const gameSelect = `SELECT id, title, slug, image, box_art, box_art_checked_at, folder, works_windows, works_mac, works_linux, owned, selected, include_dlc, include_extras, details_synced_at, details_error, created_at, updated_at FROM games`
+const gameSelect = `SELECT id, title, slug, image, box_art, box_art_checked_at, folder, works_windows, works_mac, works_linux, owned, selected, include_dlc, include_extras, include_saves, details_synced_at, details_error, created_at, updated_at FROM games`
 
 func scanGame(rows *sql.Rows) (Game, error) {
 	var g Game
-	var ww, wm, wl, owned, selected, dlc, extras int
+	var ww, wm, wl, owned, selected, dlc, extras, saves int
 	var synced, artChecked sql.NullInt64
 	var created, updated int64
-	err := rows.Scan(&g.ID, &g.Title, &g.Slug, &g.Image, &g.BoxArt, &artChecked, &g.Folder, &ww, &wm, &wl, &owned, &selected, &dlc, &extras, &synced, &g.DetailsError, &created, &updated)
+	err := rows.Scan(&g.ID, &g.Title, &g.Slug, &g.Image, &g.BoxArt, &artChecked, &g.Folder, &ww, &wm, &wl, &owned, &selected, &dlc, &extras, &saves, &synced, &g.DetailsError, &created, &updated)
 	if err != nil {
 		return g, err
 	}
 	g.WorksWindows, g.WorksMac, g.WorksLinux, g.Owned, g.Selected = ww == 1, wm == 1, wl == 1, owned == 1, selected == 1
-	g.IncludeDLC, g.IncludeExtras = dlc == 1, extras == 1
+	g.IncludeDLC, g.IncludeExtras, g.IncludeSaves = dlc == 1, extras == 1, saves == 1
 	if synced.Valid {
 		t := time.UnixMilli(synced.Int64)
 		g.DetailsSyncedAt = &t
@@ -749,10 +765,10 @@ func (d *DB) SetGamesSelected(ctx context.Context, ids []int64, selected bool) e
 	return err
 }
 
-// SetGameOptions stores a game's own DLC and extras opt-ins.
-func (d *DB) SetGameOptions(ctx context.Context, id int64, dlc, extras bool) error {
-	_, err := d.ExecContext(ctx, `UPDATE games SET include_dlc = ?, include_extras = ?, updated_at = ? WHERE id = ?`,
-		b2i(dlc), b2i(extras), time.Now().UnixMilli(), id)
+// SetGameOptions stores a game's own DLC, extras and cloud save opt-ins.
+func (d *DB) SetGameOptions(ctx context.Context, id int64, dlc, extras, saves bool) error {
+	_, err := d.ExecContext(ctx, `UPDATE games SET include_dlc = ?, include_extras = ?, include_saves = ?, updated_at = ? WHERE id = ?`,
+		b2i(dlc), b2i(extras), b2i(saves), time.Now().UnixMilli(), id)
 	return err
 }
 
@@ -828,6 +844,73 @@ func (d *DB) SetGameBuild(ctx context.Context, gameID int64, os, buildID, versio
 	return err
 }
 
+// GameClient is the Galaxy client recorded for a game and OS: the OAuth client
+// that names its cloud storage. An empty ClientID records that the game has no
+// Galaxy build for the OS, and so no cloud saves, as of CheckedAt.
+type GameClient struct {
+	GameID       int64
+	OS           string
+	ClientID     string
+	ClientSecret string
+	CheckedAt    time.Time
+}
+
+// GetGameClient returns the client recorded for a game and OS, or nil when none
+// was ever looked up.
+func (d *DB) GetGameClient(ctx context.Context, gameID int64, os string) (*GameClient, error) {
+	cs, err := d.queryGameClients(ctx, `WHERE game_id = ? AND os = ?`, gameID, os)
+	if err != nil || len(cs) == 0 {
+		return nil, err
+	}
+	return &cs[0], nil
+}
+
+// FindGameClient returns the recorded client with the given id for a game, on
+// whichever OS it was found, or nil when the game has no such client.
+func (d *DB) FindGameClient(ctx context.Context, gameID int64, clientID string) (*GameClient, error) {
+	if clientID == "" {
+		return nil, nil
+	}
+	cs, err := d.queryGameClients(ctx, `WHERE game_id = ? AND client_id = ? ORDER BY os`, gameID, clientID)
+	if err != nil || len(cs) == 0 {
+		return nil, err
+	}
+	return &cs[0], nil
+}
+
+// ListGameClients returns the clients recorded for a game, one per OS looked up.
+func (d *DB) ListGameClients(ctx context.Context, gameID int64) ([]GameClient, error) {
+	return d.queryGameClients(ctx, `WHERE game_id = ? ORDER BY os`, gameID)
+}
+
+func (d *DB) queryGameClients(ctx context.Context, where string, args ...any) ([]GameClient, error) {
+	rows, err := d.QueryContext(ctx, `SELECT game_id, os, client_id, client_secret, checked_at FROM game_clients `+where, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GameClient
+	for rows.Next() {
+		var c GameClient
+		var checked int64
+		if err := rows.Scan(&c.GameID, &c.OS, &c.ClientID, &c.ClientSecret, &checked); err != nil {
+			return nil, err
+		}
+		c.CheckedAt = time.UnixMilli(checked)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// SetGameClient records the client found for a game and OS just now; empty
+// values record that there is none.
+func (d *DB) SetGameClient(ctx context.Context, gameID int64, os, clientID, clientSecret string) error {
+	_, err := d.ExecContext(ctx, `INSERT INTO game_clients(game_id, os, client_id, client_secret, checked_at) VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(game_id, os) DO UPDATE SET client_id = excluded.client_id, client_secret = excluded.client_secret, checked_at = excluded.checked_at`,
+		gameID, os, clientID, clientSecret, time.Now().UnixMilli())
+	return err
+}
+
 // GameStatsAll returns per-game aggregates over active files.
 func (d *DB) GameStatsAll(ctx context.Context) (map[int64]GameStats, error) {
 	rows, err := d.QueryContext(ctx, `SELECT game_id,
@@ -891,6 +974,14 @@ func (d *DB) ListProducts(ctx context.Context, gameID int64) ([]Product, error) 
 
 // ---- files ----
 
+// File kinds stored in the database.
+const (
+	KindInstaller = "installer"
+	KindExtra     = "extra"
+	// KindSave is a file of the game's cloud saves.
+	KindSave = "save"
+)
+
 // File statuses stored in the database.
 const (
 	StatusPending  = "pending"
@@ -899,12 +990,12 @@ const (
 	StatusInactive = "inactive"
 )
 
-// File is one downloadable item (installer part or extra).
+// File is one downloadable item (installer part, extra or cloud save).
 type File struct {
 	ID            int64
 	GameID        int64
 	ProductID     int64
-	Kind          string // "installer" | "extra"
+	Kind          string // "installer" | "extra" | "save"
 	OS            string
 	Language      string
 	GogID         string
@@ -989,7 +1080,7 @@ func (d *DB) GetFile(ctx context.Context, id int64) (*File, error) {
 
 // ListFilesByGame returns all files (active or not) of a game.
 func (d *DB) ListFilesByGame(ctx context.Context, gameID int64) ([]File, error) {
-	return d.queryFiles(ctx, `WHERE game_id = ? ORDER BY product_id, CASE kind WHEN 'installer' THEN 0 ELSE 1 END, os, language, gog_id`, gameID)
+	return d.queryFiles(ctx, `WHERE game_id = ? ORDER BY product_id, CASE kind WHEN 'installer' THEN 0 WHEN 'extra' THEN 1 ELSE 2 END, os, language, gog_id`, gameID)
 }
 
 // ListFilesByStatus returns files with the given status and active flag.

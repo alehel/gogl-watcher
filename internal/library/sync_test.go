@@ -557,7 +557,7 @@ func TestGameOptsIntoExtrasOnItsOwn(t *testing.T) {
 		t.Fatalf("%d extras planned although extras are off", n)
 	}
 
-	if err := syncer.SetGameOptions(ctx, witcher, false, true, ""); err != nil {
+	if err := syncer.SetGameOptions(ctx, witcher, false, true, false, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := syncer.SyncGame(ctx, witcher); err != nil {
@@ -574,7 +574,7 @@ func TestGameOptsIntoExtrasOnItsOwn(t *testing.T) {
 		t.Fatal("re-applying the library settings dropped the game's own extras")
 	}
 
-	if err := syncer.SetGameOptions(ctx, witcher, false, false, ""); err != nil {
+	if err := syncer.SetGameOptions(ctx, witcher, false, false, false, ""); err != nil {
 		t.Fatal(err)
 	}
 	if n := extras(); n != 0 {

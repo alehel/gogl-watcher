@@ -2,6 +2,8 @@ package gog
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -31,6 +33,14 @@ type Mock struct {
 	// Checksums are the MD5 sums to publish, keyed by downlink. A downlink with
 	// no entry has no checksum, which is what GOG does for most extras.
 	Checksums map[string]string
+	// Clients are the Galaxy clients of the games that have one, keyed by
+	// "<product id>/<os>". A game without an entry has no cloud storage.
+	Clients map[string]GameClient
+	// Saves is what each client's cloud storage holds, keyed by client id. The
+	// content of a save is derived from its name and hash.
+	Saves map[string][]CloudSave
+	// FailSaves names the cloud saves ("<client id>/<name>") whose download fails.
+	FailSaves map[string]bool
 }
 
 // MockGame is a sample game definition.
@@ -41,7 +51,8 @@ type MockGame struct {
 
 // NewMock creates a mock with the default sample library.
 func NewMock(ctx context.Context, store TokenStore) (*Mock, error) {
-	m := &Mock{store: store, Speed: 6 << 20, FailDownlinks: map[string]bool{}, Builds: map[string]*Build{}, Checksums: map[string]string{}}
+	m := &Mock{store: store, Speed: 6 << 20, FailDownlinks: map[string]bool{}, Builds: map[string]*Build{}, Checksums: map[string]string{},
+		Clients: map[string]GameClient{}, Saves: map[string][]CloudSave{}, FailSaves: map[string]bool{}}
 	if store != nil {
 		t, err := store.Load(ctx)
 		if err != nil {
@@ -50,6 +61,7 @@ func NewMock(ctx context.Context, store TokenStore) (*Mock, error) {
 		m.token = t
 	}
 	m.Games = SampleLibrary()
+	m.SampleSaves()
 	m.FailDownlinks[MockDownlink(1207659212, "en1installer1", "setup_broken_sword_directors_cut_2.0-1.bin", 20*mb)] = true // "Broken Sword" part 2 fails on purpose
 	return m, nil
 }
@@ -267,6 +279,118 @@ func (b *mockBody) Read(p []byte) (int, error) {
 }
 
 func (b *mockBody) Close() error { return nil }
+
+// SampleSaves gives a few sample games a Galaxy client and cloud saves.
+func (m *Mock) SampleSaves() {
+	m.SetClient(1207664663, "windows", GameClient{ID: "50000000000000001", Secret: "secret-stardew"})
+	m.SetClient(1207664663, "mac", GameClient{ID: "50000000000000001", Secret: "secret-stardew"})
+	m.SetClient(1207666633, "windows", GameClient{ID: "50000000000000002", Secret: "secret-cyberpunk"})
+	m.SetClient(1207662883, "windows", GameClient{ID: "50000000000000003", Secret: "secret-hollow"})
+	m.PutSave("50000000000000001", "saves/Farmer_123456789/Farmer_123456789", 180*1024)
+	m.PutSave("50000000000000001", "saves/Farmer_123456789/SaveGameInfo", 2*1024)
+	m.PutSave("50000000000000001", "saves/startup_preferences", 1024)
+	m.PutSave("50000000000000002", "__default/AutoSave-0.dat", 3*mb)
+	m.PutSave("50000000000000002", "__default/ManualSave-1.dat", 3*mb)
+	m.PutSave("50000000000000002", "__default/UserSettings.json", 8*1024)
+	m.PutSave("50000000000000003", "user1.dat", 12*1024)
+	m.PutSave("50000000000000003", "user2.dat", 11*1024)
+}
+
+// SetClient registers the Galaxy client of a product for one OS.
+func (m *Mock) SetClient(productID int64, os string, c GameClient) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Clients[fmt.Sprintf("%d/%s", productID, os)] = c
+}
+
+// PutSave writes a cloud save of the given size, replacing an object of the
+// same name: its content, and so its hash, follow from the name and size and
+// the number of times it has been written.
+func (m *Mock) PutSave(clientID, name string, size int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	saves := m.Saves[clientID]
+	version := 1
+	for i, s := range saves {
+		if s.Name == name {
+			version = int(s.Bytes/mockSaveStride) + 2
+			saves = append(saves[:i], saves[i+1:]...)
+			break
+		}
+	}
+	// The size encodes the version, so the content changes with it; see mockSaveBody.
+	saves = append(saves, CloudSave{Name: name, Hash: mockSaveHash(clientID, name, version), Bytes: size + mockSaveStride*int64(version-1),
+		LastModified: time.Now().UTC().Truncate(time.Second)})
+	m.Saves[clientID] = saves
+}
+
+// DeleteSave removes a cloud save.
+func (m *Mock) DeleteSave(clientID, name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	saves := m.Saves[clientID]
+	for i, s := range saves {
+		if s.Name == name {
+			m.Saves[clientID] = append(saves[:i], saves[i+1:]...)
+			return
+		}
+	}
+}
+
+// mockSaveStride is what one rewrite of a mock save adds to its size.
+const mockSaveStride = 1 << 40
+
+func mockSaveHash(clientID, name string, version int) string {
+	sum := md5.Sum([]byte(fmt.Sprintf("%s/%s@%d", clientID, name, version)))
+	return hex.EncodeToString(sum[:])
+}
+
+func (m *Mock) GameClient(ctx context.Context, productID int64, os string) (*GameClient, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.Clients[fmt.Sprintf("%d/%s", productID, os)]
+	if !ok {
+		return nil, nil
+	}
+	return &c, nil
+}
+
+func (m *Mock) ListCloudSaves(ctx context.Context, client GameClient) ([]CloudSave, error) {
+	if err := m.requireAuth(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]CloudSave, 0, len(m.Saves[client.ID]))
+	for _, s := range m.Saves[client.ID] {
+		s.Bytes %= mockSaveStride
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// OpenCloudSave streams a mock save: the size the listing gives, made of bytes
+// that depend on its version, so a rewritten save reads differently.
+func (m *Mock) OpenCloudSave(ctx context.Context, client GameClient, name string) (*Download, error) {
+	if err := m.requireAuth(); err != nil {
+		return nil, err
+	}
+	if m.FailSaves[client.ID+"/"+name] {
+		return nil, &HTTPError{Status: 403, URL: "mock-cloud://" + client.ID + "/" + name}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range m.Saves[client.ID] {
+		if s.Name != name {
+			continue
+		}
+		version := int(s.Bytes/mockSaveStride) + 1
+		size := s.Bytes % mockSaveStride
+		body := &mockBody{ctx: ctx, remaining: size, pos: int64(version) * 7, speed: m.Speed}
+		return &Download{Body: body, Length: size, ModTime: s.LastModified}, nil
+	}
+	return nil, &HTTPError{Status: 404, URL: "mock-cloud://" + client.ID + "/" + name}
+}
 
 // MockDownlink builds the downlink used by the sample library.
 func MockDownlink(productID int64, fileID, name string, size int64) string {

@@ -605,6 +605,10 @@ func (s *Syncer) claimRolling(f db.File) bool {
 // platforms whose Galaxy build moved.
 func (s *Syncer) verifier(game db.Game, suspect map[string]bool, rolling bool) db.Verifier {
 	return func(ctx context.Context, stored db.File, next db.File, hint bool) (bool, error) {
+		if stored.Kind == db.KindSave {
+			// The cloud storage's own hash is the version; there is nothing to ask.
+			return hint, nil
+		}
 		switch {
 		case hint:
 			// The metadata says this changed. Confirm it before a copy that may be
@@ -739,6 +743,28 @@ func (s *Syncer) syncGame(ctx context.Context, id int64, owned gog.OwnedSet, set
 	planned := Plan(*game, p, owned, settings)
 	verify := s.verifier(*game, suspect, rolling)
 	var keep []int64
+	if settings.ForGame(*game).IncludeSaves {
+		saves, err := s.planSaves(ctx, *game, planned[0].Product.ID)
+		if err != nil {
+			if ctx.Err() != nil {
+				return err
+			}
+			// What the cloud holds is unknown this time round, so the saves already
+			// tracked stay as they are rather than being taken for gone.
+			s.log.Warn("could not list cloud saves, keeping the known ones", "game", game.Title, "error", err)
+			files, err := s.db.ListActiveFilesByGame(ctx, id)
+			if err != nil {
+				return err
+			}
+			for _, f := range files {
+				if f.Kind == db.KindSave {
+					keep = append(keep, f.ID)
+				}
+			}
+		} else {
+			planned[0].Files = append(planned[0].Files, saves...)
+		}
+	}
 	added, updated, changed := 0, 0, 0
 	for _, pp := range planned {
 		if err := s.db.UpsertProduct(ctx, pp.Product); err != nil {

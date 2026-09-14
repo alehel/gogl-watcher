@@ -608,3 +608,60 @@ func TestSortSummariesDownloadedFirst(t *testing.T) {
 	check("status, downloaded first", "status", true, "Delta", "Bravo", "Charlie", "Alpha")
 	check("updated, downloaded first", "updated", true, "Delta", "Bravo", "Charlie", "Alpha")
 }
+
+// A game opts in to cloud saves on its own when the library-wide setting is
+// off; the status and the game's summary say so, and its saves get planned.
+func TestGameOptsIntoCloudSaves(t *testing.T) {
+	srv, _ := newTestServer(t)
+	if code, _ := call(t, srv, "POST", "/api/auth/code", map[string]string{"code": "abc"}); code != 200 {
+		t.Fatal("auth failed")
+	}
+	_, settings := call(t, srv, "GET", "/api/settings", nil)
+	if settings["include_saves"] != false {
+		t.Fatalf("saves should be off by default: %v", settings)
+	}
+	settings["download_mode"] = "all"
+	settings["platforms"] = []string{"windows"}
+	settings["content_chosen"] = true
+	if code, out := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings}); code != 200 {
+		t.Fatalf("save settings: %d %v", code, out)
+	}
+	if code, out := call(t, srv, "POST", "/api/setup/complete", nil); code != 200 {
+		t.Fatalf("complete: %d %v", code, out)
+	}
+	waitGames(t, srv, 10)
+	waitSyncIdle(t, srv)
+	_, st := call(t, srv, "GET", "/api/status", nil)
+	if st["library"].(map[string]any)["include_saves"] != false {
+		t.Errorf("status should carry the saves setting: %v", st["library"])
+	}
+	const stardew = "1207664663"
+	countSaves := func() int {
+		n := 0
+		for _, p := range gameByID(t, srv, stardew)["products"].([]any) {
+			for _, f := range p.(map[string]any)["files"].([]any) {
+				if f.(map[string]any)["kind"] == "save" {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	if n := countSaves(); n != 0 {
+		t.Fatalf("%d saves tracked with saves off", n)
+	}
+	code, out := call(t, srv, "PUT", "/api/games/"+stardew+"/options", map[string]any{"include_dlc": false, "include_extras": false, "include_saves": true})
+	if code != 200 || out["include_saves"] != true {
+		t.Fatalf("options: %d %v", code, out)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && countSaves() < 3 {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if n := countSaves(); n != 3 {
+		t.Fatalf("want 3 saves planned after opting in, got %d", n)
+	}
+	if g := gameByID(t, srv, stardew)["game"].(map[string]any); g["include_saves"] != true {
+		t.Errorf("summary should carry the opt-in: %v", g)
+	}
+}

@@ -4,6 +4,7 @@ package gog
 import (
 	"context"
 	"io"
+	"time"
 )
 
 // API is the subset of GOG functionality the application needs. The real Client
@@ -41,6 +42,17 @@ type API interface {
 	FetchChecksum(ctx context.Context, url string) (*Checksum, error)
 	// OpenDownload starts a (possibly ranged) download of a CDN URL.
 	OpenDownload(ctx context.Context, url string, offset int64) (*Download, error)
+
+	// GameClient returns the OAuth client of the game's Galaxy build for one OS
+	// ("windows" or "mac"), which names its cloud storage, or nil when the game
+	// has no Galaxy build there and so no cloud saves.
+	GameClient(ctx context.Context, productID int64, os string) (*GameClient, error)
+	// ListCloudSaves lists the files in the game's cloud storage container.
+	ListCloudSaves(ctx context.Context, client GameClient) ([]CloudSave, error)
+	// OpenCloudSave starts the download of one cloud save, decompressed and
+	// checked against the store's checksum (a mismatch ends the body with
+	// ErrChecksumMismatch).
+	OpenCloudSave(ctx context.Context, client GameClient, name string) (*Download, error)
 }
 
 // Download is an open transfer.
@@ -52,4 +64,7 @@ type Download struct {
 	Length int64
 	// Filename from Content-Disposition, if any.
 	Filename string
+	// ModTime is when the file was last written where it came from, if known
+	// (cloud saves carry it); zero otherwise.
+	ModTime time.Time
 }

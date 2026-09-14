@@ -36,7 +36,7 @@ with an appropriate 4xx/5xx status. Timestamps are RFC 3339 strings or `null`.
     "games": 0, "complete": 0, "pending": 0, "downloading": 0,
     "partial": 0, "error": 0, "unavailable": 0, "unsynced": 0, "unselected": 0,
     "download_mode": "all",         // "all" | "selected" | "selected_new" (see settings)
-    "include_dlc": true, "include_extras": false,  // the library-wide settings; a game can opt in on its own
+    "include_dlc": true, "include_extras": false, "include_saves": false,  // the library-wide settings; a game can opt in on its own
     "bytes_total": 0, "bytes_done": 0
   },
   "disk": { "library_dir": "/library", "free_bytes": 0, "total_bytes": 0 }
@@ -45,7 +45,7 @@ with an appropriate 4xx/5xx status. Timestamps are RFC 3339 strings or `null`.
 
 `setup_step` tells the UI which wizard step is next: `auth` (no valid GOG token yet),
 `games` (not yet chosen between downloading every game or only selected ones),
-`platforms` (no platform chosen yet), `content` (DLC/extras choice not made yet),
+`platforms` (no platform chosen yet), `content` (DLC/extras/cloud saves choice not made yet),
 `done` (setup finished). While `setup_complete` is false every UI route should redirect
 to the wizard.
 
@@ -88,6 +88,7 @@ Triggers the first library sync.
   "content_chosen": false,               // becomes true once the setup wizard stored the choice
   "include_dlc": true,
   "include_extras": false,
+  "include_saves": false,                // back up the cloud saves of games that have any
   "max_concurrent_downloads": 2,         // 1..8
   "speed_limit_kbps": 0,                 // kilobytes per second, 0 = unlimited
   "check_interval_hours": 6,             // 1..168
@@ -107,7 +108,7 @@ wanted if these settings were applied:
 {
   "needs_confirmation": true,
   "removed": { "files": 12, "bytes": 123456789, "downloaded_files": 10, "downloaded_bytes": 100000000 },
-  "reasons": ["platform:linux", "extras", "dlc", "language:de", "unselected"]
+  "reasons": ["platform:linux", "extras", "dlc", "saves", "language:de", "unselected"]
 }
 ```
 
@@ -145,7 +146,7 @@ that are in use on an owned game, with counts, whatever the filter.
   "tags": ["Completed", "Favorite"],   // the user's own gog.com tags, sorted
   "owned": true,
   "selected": false,      // flagged for download; only matters when download_mode is "selected"
-  "include_dlc": false, "include_extras": true,  // the game's own opt-ins; matter when the library-wide setting is off
+  "include_dlc": false, "include_extras": true, "include_saves": false,  // the game's own opt-ins; matter when the library-wide setting is off
   "status": "complete",   // "complete" | "downloading" | "pending" | "partial" | "error" | "unavailable" | "unsynced" | "unselected"
   "files_total": 3, "files_done": 3,
   "bytes_total": 1234, "bytes_done": 1234,
@@ -172,10 +173,10 @@ pending, none active; `error` – at least one file failed; `complete` – every
     "id": 1207658924, "title": "The Witcher", "is_dlc": false,
     "files": [ {
       "id": 42,
-      "kind": "installer",             // "installer" | "extra"
-      "os": "windows",                 // "windows" | "mac" | "linux" | "" for extras
+      "kind": "installer",             // "installer" | "extra" | "save"
+      "os": "windows",                 // "windows" | "mac" | "linux" | "" for extras and saves
       "language": "en",
-      "name": "The Witcher",           // GOG's label for the installer/extra
+      "name": "The Witcher",           // GOG's label for the installer/extra; a cloud save's path in the cloud
       "version": "1.5",
       "size": 1234,
       "filename": "setup_the_witcher_1.5.exe", // null until the download link was resolved
@@ -200,12 +201,12 @@ change does: with downloaded files present and `on_removed` null → 409
 any download mode but only has an effect in `selected` and `selected_new`.
 
 ### `PUT /api/games/{id}/options`
-Body `{ "include_dlc": false, "include_extras": true, "on_removed": "keep" | "delete" | null }`.
-Opts one game in to (or out of) DLC and extras regardless of the library-wide settings; the
+Body `{ "include_dlc": false, "include_extras": true, "include_saves": false, "on_removed": "keep" | "delete" | null }`.
+Opts one game in to (or out of) DLC, extras and cloud saves regardless of the library-wide settings; the
 setting that is on for the library wins either way. Opting in syncs the game right away so the
 files get planned; opting out drops the files no longer wanted like a settings change does (409
 `confirmation_required` with downloaded files present and `on_removed` null).
-200 `{ "ok": true, "include_dlc": false, "include_extras": true }`. Unknown id → 404.
+200 `{ "ok": true, "include_dlc": false, "include_extras": true, "include_saves": false }`. Unknown id → 404.
 
 ### `GET /api/games/{id}/offer`
 What GOG offers for the game right now, without planning any of it: every installer and extra of

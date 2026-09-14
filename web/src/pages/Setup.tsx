@@ -338,10 +338,11 @@ function ContentStep({
   const chosen = settings.content_chosen;
   const [dlc, setDlc] = useState<boolean | null>(chosen ? settings.include_dlc : null);
   const [extras, setExtras] = useState<boolean | null>(chosen ? settings.include_extras : null);
+  const [saves, setSaves] = useState<boolean | null>(chosen ? settings.include_saves : null);
   const [langs, setLangs] = useState<string[]>(settings.languages.length ? settings.languages : ["en"]);
   const [fallback, setFallback] = useState(settings.language_fallback);
 
-  const valid = dlc !== null && extras !== null && langs.length > 0;
+  const valid = dlc !== null && extras !== null && saves !== null && langs.length > 0;
   const save = useStepSave(
     () =>
       putSettings(
@@ -349,6 +350,7 @@ function ContentStep({
           ...settings,
           include_dlc: dlc ?? false,
           include_extras: extras ?? false,
+          include_saves: saves ?? false,
           languages: langs,
           language_fallback: fallback,
           content_chosen: true,
@@ -379,6 +381,14 @@ function ContentStep({
         hint="Soundtracks, manuals, wallpapers, artbooks and other bonus content."
         value={extras}
         onChange={setExtras}
+        disabled={save.busy}
+      />
+      <YesNo
+        name="saves"
+        label="Include cloud saves"
+        hint="A copy of the save games GOG Galaxy keeps in the cloud, for the games that have any."
+        value={saves}
+        onChange={setSaves}
         disabled={save.busy}
       />
       <div className="field">
@@ -458,6 +468,8 @@ function FinishStep({
         <dd>{settings.include_dlc ? "Included" : "Not included"}</dd>
         <dt>Extras</dt>
         <dd>{settings.include_extras ? "Included" : "Not included"}</dd>
+        <dt>Cloud saves</dt>
+        <dd>{settings.include_saves ? "Included" : "Not included"}</dd>
         <dt>Check interval</dt>
         <dd>every {settings.check_interval_hours} h</dd>
       </dl>

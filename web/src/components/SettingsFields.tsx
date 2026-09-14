@@ -230,6 +230,8 @@ export function describeReason(reason: string, languages: LanguageOption[]): str
       return "DLC is no longer included";
     case "extras":
       return "Extras are no longer included";
+    case "saves":
+      return "Cloud saves are no longer included";
     case "unselected":
       return "The game is not selected for download";
     default:

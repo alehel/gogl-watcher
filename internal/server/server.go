@@ -174,10 +174,11 @@ type gameSummary struct {
 	Tags     []string        `json:"tags"`
 	Owned    bool            `json:"owned"`
 	Selected bool            `json:"selected"`
-	// IncludeDLC and IncludeExtras are the game's own opt-ins; they matter when
-	// the library-wide setting is off.
+	// IncludeDLC, IncludeExtras and IncludeSaves are the game's own opt-ins; they
+	// matter when the library-wide setting is off.
 	IncludeDLC    bool       `json:"include_dlc"`
 	IncludeExtras bool       `json:"include_extras"`
+	IncludeSaves  bool       `json:"include_saves"`
 	Status        string     `json:"status"`
 	FilesTotal    int        `json:"files_total"`
 	FilesDone     int        `json:"files_done"`
@@ -193,7 +194,7 @@ func (s *Server) summarize(g db.Game, st db.GameStats, active map[int64][]downlo
 	out := gameSummary{
 		ID: g.ID, Title: g.Title, Slug: g.Slug, Image: g.Cover(), Folder: g.Folder,
 		WorksOn: worksOn(g), Tags: g.Tags,
-		Owned: g.Owned, Selected: g.Selected, IncludeDLC: g.IncludeDLC, IncludeExtras: g.IncludeExtras, FilesTotal: st.FilesTotal, FilesDone: st.FilesDone, BytesTotal: st.BytesTotal, BytesDone: st.BytesDone,
+		Owned: g.Owned, Selected: g.Selected, IncludeDLC: g.IncludeDLC, IncludeExtras: g.IncludeExtras, IncludeSaves: g.IncludeSaves, FilesTotal: st.FilesTotal, FilesDone: st.FilesDone, BytesTotal: st.BytesTotal, BytesDone: st.BytesDone,
 		LastSyncedAt: g.DetailsSyncedAt, UpdatedAt: g.UpdatedAt, DetailsError: g.DetailsError,
 	}
 	if out.Tags == nil {
@@ -295,6 +296,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	lib["download_mode"] = settings.DownloadMode
 	lib["include_dlc"] = settings.IncludeDLC
 	lib["include_extras"] = settings.IncludeExtras
+	lib["include_saves"] = settings.IncludeSaves
 	lib["bytes_total"] = bytesTotal
 	lib["bytes_done"] = bytesDone
 
@@ -396,7 +398,7 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.Log.Info("setup completed", "mode", settings.DownloadMode, "platforms", strings.Join(settings.Platforms, ","), "dlc", settings.IncludeDLC, "extras", settings.IncludeExtras)
+	s.Log.Info("setup completed", "mode", settings.DownloadMode, "platforms", strings.Join(settings.Platforms, ","), "dlc", settings.IncludeDLC, "extras", settings.IncludeExtras, "saves", settings.IncludeSaves)
 	s.Downloads.Configure(settings, true)
 	s.Scheduler.TriggerNow()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -460,7 +462,7 @@ func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Log.Info("settings saved", "mode", ns.DownloadMode, "platforms", strings.Join(ns.Platforms, ","), "languages", strings.Join(ns.Languages, ","),
-		"dlc", ns.IncludeDLC, "extras", ns.IncludeExtras, "concurrent", ns.MaxConcurrentDownloads,
+		"dlc", ns.IncludeDLC, "extras", ns.IncludeExtras, "saves", ns.IncludeSaves, "concurrent", ns.MaxConcurrentDownloads,
 		"speed_limit_kbps", ns.SpeedLimitKBps, "interval_hours", ns.CheckIntervalHours)
 	s.Downloads.Configure(ns, done)
 	if done && !old.SamePlan(ns) {
@@ -693,9 +695,10 @@ func (s *Server) handleGamesSelection(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "selected": body.Selected, "ids": body.IDs})
 }
 
-// handleGameOptions opts a game in to or out of DLC and extras on its own. Opting
-// in syncs the game right away so the files get planned; opting out may need
-// the keep-or-delete answer for downloaded files (409, like a settings change).
+// handleGameOptions opts a game in to or out of DLC, extras and cloud saves on
+// its own. Opting in syncs the game right away so the files get planned; opting
+// out may need the keep-or-delete answer for downloaded files (409, like a
+// settings change).
 func (s *Server) handleGameOptions(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id, ok := pathID(r)
@@ -706,6 +709,7 @@ func (s *Server) handleGameOptions(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		IncludeDLC    bool                  `json:"include_dlc"`
 		IncludeExtras bool                  `json:"include_extras"`
+		IncludeSaves  bool                  `json:"include_saves"`
 		OnRemoved     library.RemovalAction `json:"on_removed"`
 	}
 	if err := readJSON(w, r, &body); err != nil {
@@ -721,7 +725,7 @@ func (s *Server) handleGameOptions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "game not found")
 		return
 	}
-	if err := s.Syncer.SetGameOptions(ctx, id, body.IncludeDLC, body.IncludeExtras, body.OnRemoved); err != nil {
+	if err := s.Syncer.SetGameOptions(ctx, id, body.IncludeDLC, body.IncludeExtras, body.IncludeSaves, body.OnRemoved); err != nil {
 		if !writeConfirmation(w, err) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 		}
@@ -729,7 +733,7 @@ func (s *Server) handleGameOptions(w http.ResponseWriter, r *http.Request) {
 	}
 	settings, _ := s.DB.GetSettings(ctx)
 	done, _ := s.DB.SetupComplete(ctx)
-	optedIn := (body.IncludeDLC && !before.IncludeDLC) || (body.IncludeExtras && !before.IncludeExtras)
+	optedIn := (body.IncludeDLC && !before.IncludeDLC) || (body.IncludeExtras && !before.IncludeExtras) || (body.IncludeSaves && !before.IncludeSaves)
 	if optedIn && done && settings.WantsGame(*before) && s.GOG.Authenticated() {
 		go func() {
 			sctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -740,7 +744,7 @@ func (s *Server) handleGameOptions(w http.ResponseWriter, r *http.Request) {
 			s.Downloads.Wake()
 		}()
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "include_dlc": body.IncludeDLC, "include_extras": body.IncludeExtras})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "include_dlc": body.IncludeDLC, "include_extras": body.IncludeExtras, "include_saves": body.IncludeSaves})
 }
 
 // handleGameOffer answers what GOG offers for a game without planning any of
