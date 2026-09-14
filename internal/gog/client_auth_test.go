@@ -1,8 +1,10 @@
 package gog
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -142,5 +144,73 @@ func TestExchangeCodeKeepsTokensRotatedDuringUserFetch(t *testing.T) {
 	}
 	if store.t.RefreshToken != "r2" || store.t.Username != "tester" {
 		t.Errorf("stored token lost the rotation: %+v", store.t)
+	}
+}
+
+// ctxStore fails a write whose context is done, as the database does.
+type ctxStore struct{ memStore }
+
+func (s *ctxStore) Save(ctx context.Context, t Token) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.memStore.Save(ctx, t)
+}
+
+// cancelAfterTransport cancels the caller once a request to path has been
+// answered in full, which is the moment GOG has already rotated the tokens.
+type cancelAfterTransport struct {
+	rewriteTransport
+	path   string
+	cancel context.CancelFunc
+}
+
+func (t cancelAfterTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := t.rewriteTransport.RoundTrip(r)
+	if err != nil || r.URL.Path != t.path {
+		return resp, err
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	t.cancel()
+	return resp, nil
+}
+
+// GOG rotates the refresh token on every refresh, so the pair it answers with
+// must reach the store even when the request that needed it is cancelled right
+// then (a paused transfer, a closed tab): otherwise the process restarts into a
+// session GOG no longer accepts.
+func TestRotatedTokensAreStoredWhenTheCallerIsCancelled(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth.gog.com/token", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"access_token":"a2","expires_in":3600,"refresh_token":"r2","user_id":"7"}`)
+	})
+	mux.HandleFunc("/embed.gog.com/user/data/games", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"owned":[1]}`)
+	})
+	c, srv := newTestClient(t, mux)
+	defer srv.Close()
+	store := &ctxStore{memStore{Token{RefreshToken: "r1"}}}
+	c.store = store
+	c.mu.Lock()
+	c.token = Token{RefreshToken: "r1", ExpiresAt: time.Now().Add(-time.Minute)}
+	c.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.http.Transport = cancelAfterTransport{rewriteTransport: c.http.Transport.(rewriteTransport), path: "/token", cancel: cancel}
+
+	_, _ = c.OwnedIDs(ctx) // may well fail: the caller is gone
+	if store.t.RefreshToken != "r2" || store.t.AccessToken != "a2" {
+		t.Fatalf("rotated tokens were not stored: %+v", store.t)
+	}
+	c.mu.Lock()
+	live := c.token
+	c.mu.Unlock()
+	if live.RefreshToken != "r2" {
+		t.Errorf("live token = %+v", live)
 	}
 }

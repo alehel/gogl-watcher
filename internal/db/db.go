@@ -555,7 +555,9 @@ type GameStats struct {
 }
 
 // UpsertGame inserts or updates listing information, tags included. Folder is
-// only set on insert.
+// only set on insert. The game's updated_at moves only when the listing really
+// changed: every sync lists every game, and "recently updated" must not mean
+// "recently synced".
 func (d *DB) UpsertGame(ctx context.Context, g Game) error {
 	now := time.Now().UnixMilli()
 	tx, err := d.BeginTx(ctx, nil)
@@ -567,7 +569,9 @@ func (d *DB) UpsertGame(ctx context.Context, g Game) error {
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET title = excluded.title, slug = excluded.slug, image = excluded.image,
 		works_windows = excluded.works_windows, works_mac = excluded.works_mac, works_linux = excluded.works_linux,
-		owned = 1, updated_at = excluded.updated_at`,
+		owned = 1, updated_at = CASE WHEN title = excluded.title AND slug = excluded.slug AND image = excluded.image
+			AND works_windows = excluded.works_windows AND works_mac = excluded.works_mac AND works_linux = excluded.works_linux
+			AND owned = 1 THEN updated_at ELSE excluded.updated_at END`,
 		g.ID, g.Title, g.Slug, g.Image, g.Folder, b2i(g.WorksWindows), b2i(g.WorksMac), b2i(g.WorksLinux), now, now)
 	if err != nil {
 		return err
@@ -766,13 +770,22 @@ func (d *DB) MarkGamesNotOwned(ctx context.Context, keep []int64) error {
 }
 
 // SetGameDetailsSynced records a successful (err == "") or failed detail fetch.
+// It is not an update of the game: details_synced_at is its own timestamp.
 func (d *DB) SetGameDetailsSynced(ctx context.Context, id int64, errMsg string) error {
 	now := time.Now().UnixMilli()
 	if errMsg != "" {
-		_, err := d.ExecContext(ctx, `UPDATE games SET details_error = ?, updated_at = ? WHERE id = ?`, errMsg, now, id)
+		_, err := d.ExecContext(ctx, `UPDATE games SET details_error = ? WHERE id = ?`, errMsg, id)
 		return err
 	}
-	_, err := d.ExecContext(ctx, `UPDATE games SET details_synced_at = ?, details_error = '', updated_at = ? WHERE id = ?`, now, now, id)
+	_, err := d.ExecContext(ctx, `UPDATE games SET details_synced_at = ?, details_error = '' WHERE id = ?`, now, id)
+	return err
+}
+
+// TouchGame records that something about the game changed just now, which is
+// what the library's "recently updated" order goes by: a sync that planned new
+// or updated files for it, or dropped some.
+func (d *DB) TouchGame(ctx context.Context, id int64) error {
+	_, err := d.ExecContext(ctx, `UPDATE games SET updated_at = ? WHERE id = ?`, time.Now().UnixMilli(), id)
 	return err
 }
 
@@ -995,9 +1008,12 @@ func (d *DB) ListActiveFilesByGame(ctx context.Context, gameID int64) ([]File, e
 }
 
 // NextPendingFiles returns up to limit pending files ready to be downloaded, skipping exclude ids.
+// Files of a game the account no longer owns wait: GOG would refuse them, and
+// they are wanted again as they are should the game come back.
 func (d *DB) NextPendingFiles(ctx context.Context, limit int, exclude []int64) ([]File, error) {
 	now := time.Now().UnixMilli()
-	where := `WHERE status = 'pending' AND active = 1 AND next_attempt_at <= ?`
+	where := `WHERE status = 'pending' AND active = 1 AND next_attempt_at <= ?
+		AND game_id IN (SELECT id FROM games WHERE owned = 1)`
 	args := []any{now}
 	if len(exclude) > 0 {
 		where += ` AND id NOT IN (` + placeholders(len(exclude)) + `)`
@@ -1242,12 +1258,14 @@ func (d *DB) SetFileDone(ctx context.Context, id int64, localPath string, size i
 }
 
 // CompleteFile marks a download complete like SetFileDone, but only if the row
-// still describes the download that was made (same download link and version).
-// It reports false when the file was updated on GOG in the meantime; the row is
-// then left pending for the new version.
+// still wants the download that was made: it is active and describes the same
+// download link and version. It reports false when the file was updated on GOG
+// in the meantime (the row is then left pending for the new version), or when
+// the file stopped being wanted while it transferred (the row was dropped, or
+// kept as it was when the user answered "keep": the previous version).
 func (d *DB) CompleteFile(ctx context.Context, id int64, localPath string, size int64, downlink, version string) (bool, error) {
 	now := time.Now().UnixMilli()
-	res, err := d.ExecContext(ctx, `UPDATE files `+fileDoneSet+` WHERE id = ? AND downlink = ? AND version = ?`,
+	res, err := d.ExecContext(ctx, `UPDATE files `+fileDoneSet+` WHERE id = ? AND active = 1 AND downlink = ? AND version = ?`,
 		localPath, size, now, now, now, id, downlink, version)
 	if err != nil {
 		return false, err
@@ -1263,15 +1281,17 @@ func (d *DB) SetFileVerified(ctx context.Context, id int64) error {
 	return err
 }
 
-// SetFileError records a failed attempt. If retryAfter is zero the file goes to the error state.
+// SetFileError records a failed attempt. If retryAfter is zero the file goes to
+// the error state. A row that was dropped or kept as inactive while the
+// transfer ran is left as it is: nothing tracks it anymore.
 func (d *DB) SetFileError(ctx context.Context, id int64, msg string, retryAfter time.Duration) error {
 	now := time.Now()
 	if retryAfter > 0 {
-		_, err := d.ExecContext(ctx, `UPDATE files SET status = 'pending', error = ?, attempts = attempts + 1, next_attempt_at = ?, updated_at = ? WHERE id = ?`,
+		_, err := d.ExecContext(ctx, `UPDATE files SET status = 'pending', error = ?, attempts = attempts + 1, next_attempt_at = ?, updated_at = ? WHERE id = ? AND active = 1`,
 			msg, now.Add(retryAfter).UnixMilli(), now.UnixMilli(), id)
 		return err
 	}
-	_, err := d.ExecContext(ctx, `UPDATE files SET status = 'error', error = ?, attempts = attempts + 1, next_attempt_at = 0, updated_at = ? WHERE id = ?`,
+	_, err := d.ExecContext(ctx, `UPDATE files SET status = 'error', error = ?, attempts = attempts + 1, next_attempt_at = 0, updated_at = ? WHERE id = ? AND active = 1`,
 		msg, now.UnixMilli(), id)
 	return err
 }

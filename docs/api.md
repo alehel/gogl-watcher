@@ -150,7 +150,10 @@ that are in use on an owned game, with counts, whatever the filter.
   "files_total": 3, "files_done": 3,
   "bytes_total": 1234, "bytes_done": 1234,
   "progress": 1.0,
-  "last_synced_at": "...", "updated_at": "..."
+  "last_synced_at": "...",  // when the game's details were last fetched from GOG
+  "updated_at": "..."       // when something last changed about the game: a sync found new, updated or
+                            // dropped files, its listing changed, or it was selected or opted in; what
+                            // `sort=updated` orders by
 } ] }
 ```
 
@@ -220,7 +223,9 @@ ten-minute cache; 502 when GOG cannot be reached.
   ] } ] }
 ```
 
-### `POST /api/games/{id}/sync` – refresh this game's details from GOG now. `{ "ok": true }`.
+### `POST /api/games/{id}/sync` – refresh this game's details from GOG now. `{ "ok": true }`; 502 with
+`"interrupted by a settings change"` when a settings change stopped it (the full sync that change
+triggers plans the game again).
 ### `POST /api/games/{id}/retry` – reset this game's failed files to pending. `{ "ok": true }`.
 ### `POST /api/files/{id}/retry` – reset one failed file to pending. `{ "ok": true }`.
 

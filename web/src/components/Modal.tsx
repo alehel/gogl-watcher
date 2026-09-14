@@ -10,10 +10,17 @@ interface Props {
 
 export function Modal({ title, onClose, children, footer }: Props) {
   const dialog = useRef<HTMLDivElement>(null);
+  // Callers pass a fresh closure on every render; kept in a ref so the listener
+  // and the scroll lock are set up once for the life of the dialog, not torn
+  // down and put back on every render while it is open.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     window.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
@@ -22,7 +29,7 @@ export function Modal({ title, onClose, children, footer }: Props) {
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
     };
-  }, [onClose]);
+  }, []);
 
   // Move the keyboard into the dialog, and back where it was when it closes, so
   // its buttons are the next thing Tab reaches.

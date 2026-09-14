@@ -470,7 +470,8 @@ func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error
 	ok, err := m.complete(ctx, f, tgt.rel, total, game.Title)
 	if err != nil || !ok {
 		if !ok {
-			// What was downloaded is the old build; the row is pending for the new one.
+			// What was downloaded is the old build (the row is pending for the new
+			// one), or nothing wants it anymore.
 			_ = os.Remove(tgt.abs)
 		}
 		return err

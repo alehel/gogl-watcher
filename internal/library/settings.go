@@ -38,7 +38,9 @@ type RemovalPreview struct {
 }
 
 // unwantedReason returns why f would no longer be wanted under s, or "".
-func unwantedReason(f db.File, game db.Game, isDLC bool, s db.Settings) string {
+// offered is what the tracked installers say about the languages GOG has for
+// f's product and platform; see fallsBackTo.
+func unwantedReason(f db.File, game db.Game, isDLC bool, s db.Settings, offered offeredLanguages) string {
 	if !s.WantsGame(game) {
 		return ReasonUnselected
 	}
@@ -55,10 +57,47 @@ func unwantedReason(f db.File, game db.Game, isDLC bool, s db.Settings) string {
 	if !s.WantsPlatform(f.OS) {
 		return "platform:" + f.OS
 	}
-	if !s.WantsLanguage(f.Language) && !s.LanguageFallback {
+	if !s.WantsLanguage(f.Language) && !(s.LanguageFallback && offered.fallsBackTo(f, s)) {
 		return "language:" + f.Language
 	}
 	return ""
+}
+
+// offeredLanguages is, per product and platform, the languages of the tracked
+// installers: the choice the plan's language fallback picks between, as far as
+// it is known without asking GOG.
+type offeredLanguages map[languageKey][]string
+
+type languageKey struct {
+	product int64
+	os      string
+}
+
+func offeredLanguagesOf(files []db.File) offeredLanguages {
+	out := offeredLanguages{}
+	for _, f := range files {
+		if f.Kind != "installer" {
+			continue
+		}
+		k := languageKey{f.ProductID, f.OS}
+		if !slices.Contains(out[k], f.Language) {
+			out[k] = append(out[k], f.Language)
+		}
+	}
+	return out
+}
+
+// fallsBackTo reports whether the fallback keeps f, an installer in a language
+// the settings do not select: it does only while none of the selected
+// languages exists for the same product and platform. Where one does, the plan
+// picks that one and drops f, whatever the fallback says.
+func (o offeredLanguages) fallsBackTo(f db.File, s db.Settings) bool {
+	for _, lang := range o[languageKey{f.ProductID, f.OS}] {
+		if s.WantsLanguage(lang) {
+			return false
+		}
+	}
+	return true
 }
 
 type unwanted struct {
@@ -103,9 +142,10 @@ func (s *Syncer) findUnwanted(ctx context.Context, ns db.Settings) ([]unwanted, 
 			}
 		}
 	}
+	offered := offeredLanguagesOf(files)
 	var out []unwanted
 	for _, f := range files {
-		if r := unwantedReason(f, games[f.GameID], dlc[f.ProductID], ns); r != "" {
+		if r := unwantedReason(f, games[f.GameID], dlc[f.ProductID], ns, offered); r != "" {
 			out = append(out, unwanted{f, r})
 		}
 	}
@@ -233,7 +273,12 @@ func (s *Syncer) ApplySettings(ctx context.Context, ns db.Settings, onRemoved Re
 		if err := s.CancelAndWait(ctx); err != nil {
 			return err
 		}
-		// The sync may have planned more files before it stopped.
+		// A sync of one game would go on planning with the old settings, too. One
+		// that starts now waits for the plan lock, and so for the new settings.
+		if err := s.stopGameSyncs(ctx); err != nil {
+			return err
+		}
+		// The syncs may have planned more files before they stopped.
 		if list, err = s.findUnwanted(ctx, ns); err != nil {
 			return err
 		}
@@ -275,9 +320,10 @@ func (s *Syncer) SetGameOptions(ctx context.Context, id int64, dlc, extras bool,
 	for _, p := range prods {
 		isDLC[p.ID] = p.IsDLC
 	}
+	offered := offeredLanguagesOf(files)
 	var list []unwanted
 	for _, f := range files {
-		if r := unwantedReason(f, *game, isDLC[f.ProductID], settings); r != "" {
+		if r := unwantedReason(f, *game, isDLC[f.ProductID], settings, offered); r != "" {
 			list = append(list, unwanted{f, r})
 		}
 	}

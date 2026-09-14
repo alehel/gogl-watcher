@@ -581,3 +581,122 @@ func TestGameOptsIntoExtrasOnItsOwn(t *testing.T) {
 		t.Fatalf("%d extras still tracked after the game opted out", n)
 	}
 }
+
+// The library can be ordered by "recently updated", which has to mean that a
+// sync found something new for the game: every sync lists and details every
+// game, so a timestamp that moved with the sync would order the games by the
+// sync's whims, not by their updates.
+func TestSyncMovesUpdatedAtOnlyWhenTheGameChanged(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	d, syncer, _ := newSyncTest(t, m)
+	ctx := context.Background()
+	saveSettings(t, d, "windows")
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stamps := func() map[int64]time.Time {
+		games, _ := d.ListGames(ctx)
+		out := map[int64]time.Time{}
+		for _, g := range games {
+			out[g.ID] = g.UpdatedAt
+		}
+		return out
+	}
+	first := stamps()
+	if len(first) == 0 {
+		t.Fatal("no games")
+	}
+	time.Sleep(5 * time.Millisecond) // the stamps have millisecond resolution
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for id, at := range stamps() {
+		if !at.Equal(first[id]) {
+			t.Errorf("game %d: updated_at moved from %v to %v although nothing changed", id, first[id], at)
+		}
+	}
+
+	// GOG publishes a new build of one game: that game, and only that game, is updated.
+	changed := m.Games[0].Listed.ID
+	inst := &m.Games[0].Product.Downloads.Installers[0]
+	inst.Version += "-new"
+	time.Sleep(5 * time.Millisecond)
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for id, at := range stamps() {
+		moved := !at.Equal(first[id])
+		if id == changed && !moved {
+			t.Errorf("updated game %d kept updated_at %v", id, at)
+		}
+		if id != changed && moved {
+			t.Errorf("game %d: updated_at moved to %v although only game %d changed", id, at, changed)
+		}
+	}
+}
+
+// A sync of one game (the game page's "re-check", the sync after selecting a
+// game) that is running when the settings change plans with the old settings:
+// it must not put back the files the change dropped. The user may just have
+// answered "delete", and the files would be downloaded all over again.
+func TestApplySettingsStopsRunningGameSync(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	api := gatedAPI{Mock: m, gate: make(chan struct{})}
+	d, syncer, _ := newSyncTest(t, api)
+	ctx := context.Background()
+	old := saveSettings(t, d, "windows", "linux")
+	close(api.gate)
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const stardew = 1207664663 // windows and linux installers
+	linuxFiles := func() int {
+		files, _ := d.ListActiveFilesByGame(ctx, stardew)
+		n := 0
+		for _, f := range files {
+			if f.OS == "linux" {
+				n++
+			}
+		}
+		return n
+	}
+	if linuxFiles() == 0 {
+		t.Fatal("expected linux files after the first sync")
+	}
+
+	// The game's own sync stalls in the details fetch; meanwhile linux is removed.
+	api.gate = make(chan struct{})
+	syncer.gog = api
+	errc := make(chan error, 1)
+	go func() { errc <- syncer.SyncGame(ctx, stardew) }()
+	waitFor(t, 5*time.Second, func() bool { return syncer.gameSyncsRunning() > 0 })
+	ns := old
+	ns.Platforms = []string{"windows"}
+	applied := make(chan error, 1)
+	go func() { applied <- syncer.ApplySettings(ctx, ns, RemovalDelete) }()
+	select {
+	case err := <-errc:
+		if err == nil {
+			t.Fatal("the game sync went on planning with the old settings")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the settings change did not stop the game sync")
+	}
+	if err := <-applied; err != nil {
+		t.Fatal(err)
+	}
+	close(api.gate)
+	if n := linuxFiles(); n != 0 {
+		t.Errorf("%d linux files tracked again although the platform was removed", n)
+	}
+
+	// A game sync that starts while the change is in progress uses the new settings.
+	if err := syncer.SyncGame(ctx, stardew); err != nil {
+		t.Fatal(err)
+	}
+	if n := linuxFiles(); n != 0 {
+		t.Errorf("%d linux files planned by the next game sync", n)
+	}
+}

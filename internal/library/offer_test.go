@@ -2,6 +2,9 @@ package library
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/alehel/gogl-watcher/internal/db"
@@ -79,5 +82,84 @@ func TestOfferMarksWantedWithoutPlanning(t *testing.T) {
 		if it.Kind == "installer" && it.OS == "windows" && it.Wanted {
 			t.Fatal("offer served from cache after the settings changed")
 		}
+	}
+}
+
+// Removing a language must be previewed (and confirmed) like removing a
+// platform, also with the language fallback on: the fallback only keeps an
+// installer while none of the selected languages exists for it. Where one does,
+// the next sync drops the other language, so the user has to be asked first.
+func TestPreviewReportsLanguageDroppedDespiteFallback(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	d, syncer, paths := newSyncTest(t, m)
+	ctx := context.Background()
+	s := saveSettings(t, d, "windows")
+	s.Languages = []string{"en", "de"}
+	s.LanguageFallback = true
+	_ = d.SaveSettings(ctx, s)
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const witcher, pentiment = 1207658924, 1207669193 // en and de installers; de only
+	byLang := func(game int64) map[string]int {
+		files, _ := d.ListActiveFilesByGame(ctx, game)
+		out := map[string]int{}
+		for _, f := range files {
+			out[f.Language]++
+		}
+		return out
+	}
+	if l := byLang(witcher); l["en"] == 0 || l["de"] == 0 {
+		t.Fatalf("both languages should be tracked: %v", l)
+	}
+	if l := byLang(pentiment); l["de"] == 0 {
+		t.Fatalf("the fallback should keep the german-only game: %v", l)
+	}
+	// One german installer is downloaded, so dropping it is a question.
+	files, _ := d.ListActiveFilesByGame(ctx, witcher)
+	for _, f := range files {
+		if f.Language == "de" {
+			rel := "Witcher/windows/de/setup.exe"
+			_ = os.MkdirAll(filepath.Dir(paths.Abs(rel)), 0o755)
+			_ = os.WriteFile(paths.Abs(rel), []byte("x"), 0o644)
+			_ = d.SetFileDone(ctx, f.ID, rel, 1)
+			break
+		}
+	}
+
+	ns := s
+	ns.Languages = []string{"en"}
+	p, err := syncer.PreviewSettings(ctx, ns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := byLang(witcher)["de"]; p.Removed.Files != want || p.Removed.DownloadedFiles != 1 {
+		t.Errorf("preview should list the %d german installers (1 downloaded), got %+v", want, p.Removed)
+	}
+	if !p.NeedsConfirmation || !slices.Contains(p.Reasons, "language:de") {
+		t.Errorf("preview = %+v, want confirmation for language:de", p)
+	}
+	if err := syncer.ApplySettings(ctx, ns, ""); err == nil {
+		t.Fatal("applying without an answer must be refused")
+	}
+	if err := syncer.ApplySettings(ctx, ns, RemovalKeep); err != nil {
+		t.Fatal(err)
+	}
+	if l := byLang(witcher); l["de"] != 0 || l["en"] == 0 {
+		t.Errorf("after the change: %v", l)
+	}
+	if l := byLang(pentiment); l["de"] == 0 {
+		t.Errorf("the fallback must keep the german-only game: %v", l)
+	}
+	// The sync agrees with the preview: nothing else to drop, nothing to re-add.
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if l := byLang(witcher); l["de"] != 0 {
+		t.Errorf("sync re-added german: %v", l)
+	}
+	if l := byLang(pentiment); l["de"] == 0 {
+		t.Errorf("sync dropped the german-only game: %v", l)
 	}
 }
