@@ -33,6 +33,17 @@ func SanitizeFolder(title string) string {
 	return s
 }
 
+// SanitizeFilename removes unsafe path characters without shortening the name.
+// Installer part numbers and extensions must survive, and multipart installers
+// may require the exact names of their companion files.
+func SanitizeFilename(name string) string {
+	s := strings.Trim(badChars.ReplaceAllString(name, " "), " .")
+	if s == "" {
+		return "untitled"
+	}
+	return s
+}
+
 // Paths resolves relative library paths to absolute ones.
 type Paths struct {
 	Root string
