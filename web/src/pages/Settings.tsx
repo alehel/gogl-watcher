@@ -99,6 +99,8 @@ function SettingsForm({
   // What will be sent: the user's edits applied to the settings as stored when saving started.
   const [payload, setPayload] = useState<Settings | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // DESIGN MOCK: artwork is not a setting the backend knows yet; the box only lives in this form.
+  const [artwork, setArtwork] = useState(true);
 
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) => setForm((f) => ({ ...f, [key]: value }));
 
@@ -231,6 +233,13 @@ function SettingsForm({
               onChange={(v) => set("include_saves", v)}
               label="Include cloud saves"
               desc="A copy of the save games GOG Galaxy keeps in the cloud, for the games that have any. The newest version is kept, in the game's saves folder."
+              disabled={busy}
+            />
+            <Checkbox
+              checked={artwork}
+              onChange={setArtwork}
+              label="Include artwork"
+              desc="The cover, background, logo, icon and screenshots GOG shows for each game, at full size, in the game's artwork folder. For printing your own covers, labels and inlays."
               disabled={busy}
             />
           </div>
