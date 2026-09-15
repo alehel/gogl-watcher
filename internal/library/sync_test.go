@@ -958,3 +958,70 @@ func TestWithdrawnPatchStaysOnDisk(t *testing.T) {
 		t.Errorf("the part never downloaded should be forgotten: %+v", other)
 	}
 }
+
+// A patch follows its installer's language, and so does the preview of a
+// language change: where the tracked patches come in fewer languages than
+// the installers, dropping an installer's language drops its patch too,
+// however the fallback would read the patches on their own.
+func TestPatchLanguageFollowsInstallerInPreview(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	d, syncer, _ := newSyncTest(t, m)
+	ctx := context.Background()
+	s := saveSettings(t, d, "windows")
+	s.Languages = []string{"en", "de"}
+	s.LanguageFallback = true
+	s.IncludePatches = true
+	_ = d.SaveSettings(ctx, s)
+	const witcher = 1207658924
+	// GOG has the Witcher's Windows installer in English and German, but the
+	// patch in English only.
+	p := &m.Games[0].Product
+	if p.ID != witcher {
+		t.Fatal("the sample library changed")
+	}
+	var patches []gog.Installer
+	for _, pt := range p.Downloads.Patches {
+		if pt.Language != "de" {
+			patches = append(patches, pt)
+		}
+	}
+	p.Downloads.Patches = patches
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tracked := func() map[string]int {
+		files, _ := d.ListActiveFilesByGame(ctx, witcher)
+		out := map[string]int{}
+		for _, f := range files {
+			out[f.Kind+"/"+f.Language]++
+		}
+		return out
+	}
+	got := tracked()
+	if got["installer/en"] != 3 || got["installer/de"] != 2 || got["patch/en"] != 2 || got["patch/de"] != 0 {
+		t.Fatalf("tracked files = %v", got)
+	}
+
+	// Only German from now on: the English installer goes, and with it the
+	// English patch, although no German patch exists to take its place.
+	ns := s
+	ns.Languages = []string{"de"}
+	preview, err := syncer.PreviewSettings(ctx, ns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Removed.Files != 5 || len(preview.Reasons) != 1 || preview.Reasons[0] != "language:en" {
+		t.Errorf("preview = %+v, want the 3 English installer parts and the 2 English patch parts dropped for language:en", preview)
+	}
+	if err := syncer.ApplySettings(ctx, ns, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got = tracked()
+	if got["installer/de"] != 2 || got["installer/en"] != 0 || got["patch/en"] != 0 || got["patch/de"] != 0 {
+		t.Errorf("after the change: %v, want the German installer and no patch", got)
+	}
+}

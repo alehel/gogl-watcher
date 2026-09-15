@@ -90,7 +90,7 @@ Triggers the first library sync.
   "content_chosen": false,               // becomes true once the setup wizard stored the choice
   "include_installers": true,            // the offline installers of the base games themselves
   "include_dlc": true,
-  "include_patches": false,              // GOG's patches from one installer version to the next, for the chosen platforms and languages
+  "include_patches": false,              // GOG's patches from one installer version to the next, for the chosen platforms, in the installers' languages
   "include_extras": false,
   "include_saves": false,                // back up the cloud saves of games that have any
   "max_concurrent_downloads": 2,         // 1..8

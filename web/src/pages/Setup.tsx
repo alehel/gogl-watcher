@@ -389,7 +389,7 @@ function ContentStep({
       <YesNo
         name="patches"
         label="Include patches"
-        hint="GOG's updates from one installer version to the next. With them, a game installed from an earlier offline installer can be brought up to date without the whole new installer."
+        hint="GOG's updates from one installer version to the next, in the languages the installers come in. With them, a game installed from an earlier offline installer can be brought up to date without the whole new installer."
         value={patches}
         onChange={setPatches}
         disabled={save.busy}

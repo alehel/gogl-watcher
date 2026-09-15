@@ -103,10 +103,17 @@ func offeredLanguagesOf(files []db.File) offeredLanguages {
 
 // fallsBackTo reports whether the fallback keeps f, an installer or patch in a
 // language the settings do not select: it does only while none of the selected
-// languages exists for the same product, platform and kind. Where one does,
-// the plan picks that one and drops f, whatever the fallback says.
+// languages exists for the same product and platform. Where one does, the
+// plan picks that one and drops f, whatever the fallback says. A patch follows
+// its installer's language (see choosePatches), so the tracked installers
+// answer for it; while none is tracked, the tracked patches are the nearest
+// thing to go by.
 func (o offeredLanguages) fallsBackTo(f db.File, s db.Settings) bool {
-	for _, lang := range o[languageKey{f.ProductID, f.OS, f.Kind}] {
+	kind := f.Kind
+	if kind == db.KindPatch && len(o[languageKey{f.ProductID, f.OS, db.KindInstaller}]) > 0 {
+		kind = db.KindInstaller
+	}
+	for _, lang := range o[languageKey{f.ProductID, f.OS, kind}] {
 		if s.WantsLanguage(lang) {
 			return false
 		}

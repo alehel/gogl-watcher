@@ -13,10 +13,14 @@
 - **Patches** (`internal/library/plan.go`): GOG publishes patches (the update from one
   version of an offline installer to the next) in the same manifest as the installers, per
   platform and language, and describes them the same way. With patches switched on (for the
-  library, or for one game on its page) they are picked like installers, by platform and
-  language with the same fallback, and stored under the installer's language folder in
-  `patches/` (`<Game>/<os>/<language>/patches/`, or `<Game>/dlc/<DLC>/<os>/<language>/patches/`),
-  next to the installer they update. They are tracked like installers: a patch GOG replaces
+  library, or for one game on its page) a platform's patches come in the languages its
+  installer is picked in, whether or not the installers themselves are downloaded: the
+  languages and their fallback are decided once, for the installer, and a patch is only of
+  use for an installer of the same language. (Where GOG lists no installer for a platform,
+  the patches are picked like installers.) They are stored under the installer's language
+  folder in `patches/` (`<Game>/<os>/<language>/patches/`, or
+  `<Game>/dlc/<DLC>/<os>/<language>/patches/`), next to the installer they update. They are
+  tracked like installers: a patch GOG replaces
   under the same id is fetched again and the old copy removed once the new one is verified,
   and a patch GOG withdraws is marked *inactive* and left on disk, so an installed game can
   still be updated with it.

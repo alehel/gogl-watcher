@@ -225,7 +225,7 @@ function SettingsForm({
               checked={form.include_patches}
               onChange={(v) => set("include_patches", v)}
               label="Include patches"
-              desc="GOG's updates from one installer version to the next, for the chosen platforms and languages. A game installed from an earlier offline installer can be brought up to date with them instead of being reinstalled. They go in a patches folder next to the installer."
+              desc="GOG's updates from one installer version to the next, for the chosen platforms, in the languages the installers come in. A game installed from an earlier offline installer can be brought up to date with them instead of being reinstalled. They go in a patches folder next to the installer they belong to."
               disabled={busy}
             />
             <Checkbox

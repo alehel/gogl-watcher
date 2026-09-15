@@ -277,10 +277,11 @@ type Settings struct {
 	// and those installations were downloading them.
 	IncludeInstallers bool `json:"include_installers"`
 	IncludeDLC        bool `json:"include_dlc"`
-	// IncludePatches fetches the patches GOG publishes for the chosen platforms
-	// and languages: the updates from one version of an offline installer to
-	// the next, so that a game installed from an offline installer can be
-	// brought up to date without the whole new installer.
+	// IncludePatches fetches the patches GOG publishes for the chosen
+	// platforms, in the languages the installers are picked in: the updates
+	// from one version of an offline installer to the next, so that a game
+	// installed from an offline installer can be brought up to date without
+	// the whole new installer.
 	IncludePatches bool `json:"include_patches"`
 	IncludeExtras  bool `json:"include_extras"`
 	// IncludeSaves backs up the cloud saves of the games that have any.

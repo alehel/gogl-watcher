@@ -103,7 +103,7 @@ export interface Settings {
   /** The offline installers of the base games themselves. */
   include_installers: boolean;
   include_dlc: boolean;
-  /** GOG's patches from one installer version to the next, for the chosen platforms and languages. */
+  /** GOG's patches from one installer version to the next, for the chosen platforms, in the installers' languages. */
   include_patches: boolean;
   include_extras: boolean;
   /** Back up the cloud saves of games that have any. */
