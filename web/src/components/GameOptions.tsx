@@ -20,8 +20,8 @@ interface Pending {
 }
 
 /**
- * Opts one game in to or out of base game installers, DLC, extras and cloud saves on its own. Opting out of downloaded
- * files makes the backend ask whether to keep or delete them; the hook shows that
+ * Opts one game in to or out of base game installers, DLC, patches, extras and cloud saves on its own. Opting out of
+ * downloaded files makes the backend ask whether to keep or delete them; the hook shows that
  * dialog and re-submits with the answer. Render `modal` somewhere in the page.
  */
 export function useGameOptions(id: number | string, onChanged: () => void) {

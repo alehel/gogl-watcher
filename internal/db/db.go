@@ -170,6 +170,9 @@ func (d *DB) migrate() error {
 	if err := d.addColumn("games", "include_installers", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := d.addColumn("games", "include_patches", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	return d.migrateDownloadMode()
 }
 
@@ -274,7 +277,13 @@ type Settings struct {
 	// and those installations were downloading them.
 	IncludeInstallers bool `json:"include_installers"`
 	IncludeDLC        bool `json:"include_dlc"`
-	IncludeExtras     bool `json:"include_extras"`
+	// IncludePatches fetches the patches GOG publishes for the chosen
+	// platforms, in the languages the installers are picked in: the updates
+	// from one version of an offline installer to the next, so that a game
+	// installed from an offline installer can be brought up to date without
+	// the whole new installer.
+	IncludePatches bool `json:"include_patches"`
+	IncludeExtras  bool `json:"include_extras"`
 	// IncludeSaves backs up the cloud saves of the games that have any.
 	IncludeSaves           bool `json:"include_saves"`
 	MaxConcurrentDownloads int  `json:"max_concurrent_downloads"`
@@ -291,6 +300,7 @@ func DefaultSettings() Settings {
 		LanguageFallback:       true,
 		IncludeInstallers:      true,
 		IncludeDLC:             true,
+		IncludePatches:         false,
 		IncludeExtras:          false,
 		MaxConcurrentDownloads: 2,
 		SpeedLimitKBps:         0,
@@ -374,7 +384,7 @@ func (s Settings) SamePlan(o Settings) bool {
 		strings.Join(s.Platforms, ",") == strings.Join(o.Platforms, ",") &&
 		strings.Join(s.Languages, ",") == strings.Join(o.Languages, ",") &&
 		s.LanguageFallback == o.LanguageFallback && s.IncludeInstallers == o.IncludeInstallers && s.IncludeDLC == o.IncludeDLC &&
-		s.IncludeExtras == o.IncludeExtras && s.IncludeSaves == o.IncludeSaves
+		s.IncludePatches == o.IncludePatches && s.IncludeExtras == o.IncludeExtras && s.IncludeSaves == o.IncludeSaves
 }
 
 // SelectedOnly reports whether only selected games are downloaded (whether the
@@ -399,14 +409,18 @@ func (s Settings) WantsGame(g Game) bool {
 func (s Settings) ForGame(g Game) Settings {
 	s.IncludeInstallers = s.IncludeInstallers || g.Options.Installers
 	s.IncludeDLC = s.IncludeDLC || g.Options.DLC
+	s.IncludePatches = s.IncludePatches || g.Options.Patches
 	s.IncludeExtras = s.IncludeExtras || g.Options.Extras
 	s.IncludeSaves = s.IncludeSaves || g.Options.Saves
 	return s
 }
 
 // NeedsPlatforms reports whether the settings download anything that exists
-// per platform, so that at least one platform has to be chosen.
-func (s Settings) NeedsPlatforms() bool { return s.IncludeInstallers || s.IncludeDLC }
+// per platform (installers, DLC or patches), so that at least one platform has
+// to be chosen.
+func (s Settings) NeedsPlatforms() bool {
+	return s.IncludeInstallers || s.IncludeDLC || s.IncludePatches
+}
 
 // WantsPlatform reports whether os is selected.
 func (s Settings) WantsPlatform(os string) bool { return slices.Contains(s.Platforms, os) }
@@ -556,6 +570,7 @@ type Game struct {
 type GameOptions struct {
 	Installers bool `json:"include_installers"`
 	DLC        bool `json:"include_dlc"`
+	Patches    bool `json:"include_patches"`
 	Extras     bool `json:"include_extras"`
 	Saves      bool `json:"include_saves"`
 }
@@ -727,19 +742,19 @@ func (d *DB) GetGame(ctx context.Context, id int64) (*Game, error) {
 	return &gs[0], nil
 }
 
-const gameSelect = `SELECT id, title, slug, image, box_art, box_art_checked_at, folder, works_windows, works_mac, works_linux, owned, selected, include_installers, include_dlc, include_extras, include_saves, details_synced_at, details_error, created_at, updated_at FROM games`
+const gameSelect = `SELECT id, title, slug, image, box_art, box_art_checked_at, folder, works_windows, works_mac, works_linux, owned, selected, include_installers, include_dlc, include_patches, include_extras, include_saves, details_synced_at, details_error, created_at, updated_at FROM games`
 
 func scanGame(rows *sql.Rows) (Game, error) {
 	var g Game
-	var ww, wm, wl, owned, selected, installers, dlc, extras, saves int
+	var ww, wm, wl, owned, selected, installers, dlc, patches, extras, saves int
 	var synced, artChecked sql.NullInt64
 	var created, updated int64
-	err := rows.Scan(&g.ID, &g.Title, &g.Slug, &g.Image, &g.BoxArt, &artChecked, &g.Folder, &ww, &wm, &wl, &owned, &selected, &installers, &dlc, &extras, &saves, &synced, &g.DetailsError, &created, &updated)
+	err := rows.Scan(&g.ID, &g.Title, &g.Slug, &g.Image, &g.BoxArt, &artChecked, &g.Folder, &ww, &wm, &wl, &owned, &selected, &installers, &dlc, &patches, &extras, &saves, &synced, &g.DetailsError, &created, &updated)
 	if err != nil {
 		return g, err
 	}
 	g.WorksWindows, g.WorksMac, g.WorksLinux, g.Owned, g.Selected = ww == 1, wm == 1, wl == 1, owned == 1, selected == 1
-	g.Options = GameOptions{Installers: installers == 1, DLC: dlc == 1, Extras: extras == 1, Saves: saves == 1}
+	g.Options = GameOptions{Installers: installers == 1, DLC: dlc == 1, Patches: patches == 1, Extras: extras == 1, Saves: saves == 1}
 	if synced.Valid {
 		t := time.UnixMilli(synced.Int64)
 		g.DetailsSyncedAt = &t
@@ -789,8 +804,8 @@ func (d *DB) SetGamesSelected(ctx context.Context, ids []int64, selected bool) e
 
 // SetGameOptions stores a game's own opt-ins.
 func (d *DB) SetGameOptions(ctx context.Context, id int64, o GameOptions) error {
-	_, err := d.ExecContext(ctx, `UPDATE games SET include_installers = ?, include_dlc = ?, include_extras = ?, include_saves = ?, updated_at = ? WHERE id = ?`,
-		b2i(o.Installers), b2i(o.DLC), b2i(o.Extras), b2i(o.Saves), time.Now().UnixMilli(), id)
+	_, err := d.ExecContext(ctx, `UPDATE games SET include_installers = ?, include_dlc = ?, include_patches = ?, include_extras = ?, include_saves = ?, updated_at = ? WHERE id = ?`,
+		b2i(o.Installers), b2i(o.DLC), b2i(o.Patches), b2i(o.Extras), b2i(o.Saves), time.Now().UnixMilli(), id)
 	return err
 }
 
@@ -999,7 +1014,10 @@ func (d *DB) ListProducts(ctx context.Context, gameID int64) ([]Product, error) 
 // File kinds stored in the database.
 const (
 	KindInstaller = "installer"
-	KindExtra     = "extra"
+	// KindPatch is a file of a patch: GOG's update from one version of an
+	// offline installer to the next, for the same platform and language.
+	KindPatch = "patch"
+	KindExtra = "extra"
 	// KindSave is a file of the game's cloud saves.
 	KindSave = "save"
 )
@@ -1012,12 +1030,12 @@ const (
 	StatusInactive = "inactive"
 )
 
-// File is one downloadable item (installer part, extra or cloud save).
+// File is one downloadable item (installer or patch part, extra or cloud save).
 type File struct {
 	ID            int64
 	GameID        int64
 	ProductID     int64
-	Kind          string // "installer" | "extra" | "save"
+	Kind          string // "installer" | "patch" | "extra" | "save"
 	OS            string
 	Language      string
 	GogID         string
@@ -1102,7 +1120,7 @@ func (d *DB) GetFile(ctx context.Context, id int64) (*File, error) {
 
 // ListFilesByGame returns all files (active or not) of a game.
 func (d *DB) ListFilesByGame(ctx context.Context, gameID int64) ([]File, error) {
-	return d.queryFiles(ctx, `WHERE game_id = ? ORDER BY product_id, CASE kind WHEN 'installer' THEN 0 WHEN 'extra' THEN 1 ELSE 2 END, os, language, gog_id`, gameID)
+	return d.queryFiles(ctx, `WHERE game_id = ? ORDER BY product_id, CASE kind WHEN 'installer' THEN 0 WHEN 'patch' THEN 1 WHEN 'extra' THEN 2 ELSE 3 END, os, language, gog_id`, gameID)
 }
 
 // ListQueuedFiles returns the active pending files in the order the download

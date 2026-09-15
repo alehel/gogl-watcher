@@ -230,6 +230,8 @@ export function describeReason(reason: string, languages: LanguageOption[]): str
       return "Base game installers are no longer included";
     case "dlc":
       return "DLC is no longer included";
+    case "patches":
+      return "Patches are no longer included";
     case "extras":
       return "Extras are no longer included";
     case "saves":

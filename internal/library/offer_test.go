@@ -163,3 +163,63 @@ func TestPreviewReportsLanguageDroppedDespiteFallback(t *testing.T) {
 		t.Errorf("sync dropped the german-only game: %v", l)
 	}
 }
+
+// The offer lists patches after the installers and marks them wanted only
+// when the settings ask for them.
+func TestOfferListsPatches(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	d, syncer, _ := newSyncTest(t, m)
+	ctx := context.Background()
+	s := saveSettings(t, d, "windows")
+	s.DownloadMode = db.DownloadSelected
+	_ = d.SaveSettings(ctx, s)
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const witcher = 1207658924
+	items := func() []OfferItem {
+		offer, err := syncer.Offer(ctx, witcher)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return offer.Products[0].Items
+	}
+	all := items()
+	var patches []OfferItem
+	last := -1
+	for _, it := range all {
+		if kindOrder[it.Kind] < last {
+			t.Fatalf("items out of order (installers, patches, extras): %+v", all)
+		}
+		last = kindOrder[it.Kind]
+		if it.Kind == db.KindPatch {
+			patches = append(patches, it)
+		}
+	}
+	if len(patches) != 3 {
+		t.Fatalf("want the sample's 3 patches listed, got %+v", patches)
+	}
+	for _, it := range patches {
+		if it.Wanted {
+			t.Errorf("patch wanted while patches are off: %+v", it)
+		}
+		if it.Version == "" || it.Name == "" || it.Files == 0 || it.Size == 0 || it.OS == "" || it.Language == "" {
+			t.Errorf("incomplete patch item: %+v", it)
+		}
+	}
+	s.IncludePatches = true
+	_ = d.SaveSettings(ctx, s)
+	wanted := 0
+	for _, it := range items() {
+		if it.Kind == db.KindPatch && it.Wanted {
+			wanted++
+			if it.OS != "windows" || it.Language != "en" {
+				t.Errorf("wrong patch wanted: %+v", it)
+			}
+		}
+	}
+	if wanted != 1 {
+		t.Errorf("want exactly the windows/en patch wanted, got %d", wanted)
+	}
+}

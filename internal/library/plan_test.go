@@ -191,3 +191,167 @@ func TestSanitizeFolder(t *testing.T) {
 		}
 	}
 }
+
+// Patches are a choice of their own: picked by platform and language like
+// installers, stored next to the installer they update, and fetched whether
+// or not the installers themselves are, since they update an installed game.
+func TestPlanPatches(t *testing.T) {
+	game, p, owned := witcher()
+	s := settings([]string{"windows"}, []string{"en"}, true, true, false)
+	if got := countKind(Plan(game, p, owned, s)[0].Files, db.KindPatch, "", ""); got != 0 {
+		t.Fatalf("patches planned although switched off: %d", got)
+	}
+	s.IncludePatches = true
+	files := Plan(game, p, owned, s)[0].Files
+	if got := countKind(files, db.KindPatch, "windows", "en"); got != 2 {
+		t.Errorf("windows/en patch parts = %d, want 2", got)
+	}
+	if got := countKind(files, db.KindPatch, "windows", "de"); got != 0 {
+		t.Errorf("german patch planned although only english is chosen: %d files", got)
+	}
+	if got := countKind(files, db.KindPatch, "mac", ""); got != 0 {
+		t.Errorf("mac patch planned although only windows is chosen: %d files", got)
+	}
+	if got := countKind(files, db.KindInstaller, "windows", "en"); got != 3 {
+		t.Errorf("installers = %d, want the 3 parts next to the patches", got)
+	}
+	for _, f := range files {
+		if f.Kind != db.KindPatch {
+			continue
+		}
+		if f.RelDir != "windows/en/patches" {
+			t.Errorf("patch rel dir = %q, want windows/en/patches", f.RelDir)
+		}
+		if f.Version != "1.5 (A)" || f.Name == "" || f.Downlink == "" || f.GogID == "" || f.Size == 0 {
+			t.Errorf("incomplete patch: %+v", f)
+		}
+	}
+	// Without the base game's installers the patches are still fetched.
+	s.IncludeInstallers = false
+	files = Plan(game, p, owned, s)[0].Files
+	if countKind(files, db.KindInstaller, "", "") != 0 || countKind(files, db.KindPatch, "windows", "en") != 2 {
+		t.Errorf("patches without installers: %+v", files)
+	}
+	// The language fallback applies to patches as it does to installers.
+	s = settings([]string{"windows"}, []string{"fr"}, true, true, false)
+	s.IncludePatches = true
+	if got := countKind(Plan(game, p, owned, s)[0].Files, db.KindPatch, "windows", "en"); got != 2 {
+		t.Errorf("fallback should pick the english patch, got %d files", got)
+	}
+	s.LanguageFallback = false
+	if got := countKind(Plan(game, p, owned, s)[0].Files, db.KindPatch, "", ""); got != 0 {
+		t.Errorf("without fallback no patch should be planned, got %d files", got)
+	}
+	// The game opts in on its own.
+	s = settings([]string{"windows"}, []string{"en"}, true, true, false)
+	game.Options.Patches = true
+	if got := countKind(Plan(game, p, owned, s)[0].Files, db.KindPatch, "windows", "en"); got != 2 {
+		t.Errorf("an opted-in game should get its patches, got %d files", got)
+	}
+}
+
+// A DLC's patches come with the DLC, under its folder, when patches are on;
+// several patches of one product never share a file id.
+func TestPlanDLCPatches(t *testing.T) {
+	var cp gog.Product
+	for _, g := range gog.SampleLibrary() {
+		if g.Listed.ID == 1207666633 {
+			cp = g.Product
+		}
+	}
+	game := db.Game{ID: cp.ID, Title: cp.Title, Folder: "Cyberpunk 2077"}
+	owned := gog.OwnedSet{cp.ID: true, cp.ExpandedDLCs[0].ID: true}
+	s := settings([]string{"windows"}, []string{"en"}, true, true, false)
+	s.IncludePatches = true
+	plan := Plan(game, &cp, owned, s)
+	if len(plan) != 2 {
+		t.Fatalf("expected base + dlc, got %d products", len(plan))
+	}
+	// Two patches in a row for the base game, two parts each.
+	if got := countKind(plan[0].Files, db.KindPatch, "windows", "en"); got != 4 {
+		t.Errorf("base game patch parts = %d, want 4", got)
+	}
+	ids := map[string]bool{}
+	for _, f := range plan[0].Files {
+		key := f.Kind + "/" + f.GogID
+		if ids[key] {
+			t.Errorf("two files share the id %s", key)
+		}
+		ids[key] = true
+	}
+	if got := countKind(plan[1].Files, db.KindPatch, "windows", "en"); got != 1 {
+		t.Errorf("dlc patch parts = %d, want 1", got)
+	}
+	for _, f := range plan[1].Files {
+		if f.Kind == db.KindPatch && f.RelDir != "dlc/Cyberpunk 2077 Phantom Liberty/windows/en/patches" {
+			t.Errorf("dlc patch rel dir = %q", f.RelDir)
+		}
+	}
+	// With DLC off its patches go with it; the base game keeps its own.
+	s.IncludeDLC = false
+	plan = Plan(game, &cp, owned, s)
+	if len(plan) != 1 || countKind(plan[0].Files, db.KindPatch, "windows", "en") != 4 {
+		t.Errorf("dlc disabled: %d products, %d base game patch parts", len(plan), countKind(plan[0].Files, db.KindPatch, "", ""))
+	}
+}
+
+// A patch is only of use for an installer of the same language, so patches
+// follow the installer's language rather than the settings' on their own.
+func TestPatchLanguageFollowsInstaller(t *testing.T) {
+	game, p, owned := witcher()
+	s := settings([]string{"windows"}, []string{"de"}, true, false, false)
+	s.IncludePatches = true
+	// German chosen, German installer and patch offered: the German patch only.
+	files := Plan(game, p, owned, s)[0].Files
+	if countKind(files, db.KindPatch, "windows", "de") != 2 || countKind(files, db.KindPatch, "windows", "en") != 0 {
+		t.Errorf("german settings: %+v", files)
+	}
+	// A patch in a chosen language whose installer GOG does not have is of no
+	// use: the installer falls back to English, and the patch goes with it.
+	var fr gog.Installer
+	for _, pt := range p.Downloads.Patches {
+		if pt.OS == "windows" && pt.Language == "en" {
+			fr = pt
+		}
+	}
+	fr.ID, fr.Language = "patch_windows_fr", "fr"
+	fr.Files = []gog.DownloadFile{{ID: "fr1patch0", Size: 5, Downlink: "mock://fr"}}
+	p.Downloads.Patches = append(p.Downloads.Patches, fr)
+	s.Languages = []string{"fr"}
+	files = Plan(game, p, owned, s)[0].Files
+	if countKind(files, db.KindInstaller, "windows", "en") != 3 || countKind(files, db.KindPatch, "windows", "en") != 2 ||
+		countKind(files, db.KindPatch, "windows", "fr") != 0 {
+		t.Errorf("french settings with an english fallback installer: %+v", files)
+	}
+	// No patch in the installer's language: none at all, whatever the fallback says.
+	var withoutDe []gog.Installer
+	for _, pt := range p.Downloads.Patches {
+		if pt.Language != "de" {
+			withoutDe = append(withoutDe, pt)
+		}
+	}
+	p.Downloads.Patches = withoutDe
+	s.Languages = []string{"de"}
+	files = Plan(game, p, owned, s)[0].Files
+	if countKind(files, db.KindInstaller, "windows", "de") != 2 || countKind(files, db.KindPatch, "", "") != 0 {
+		t.Errorf("german installer without a german patch: %+v", files)
+	}
+	// Where GOG lists no installer at all for a platform, the patches are picked
+	// like installers.
+	var noMac []gog.Installer
+	for _, inst := range p.Downloads.Installers {
+		if inst.OS != "mac" {
+			noMac = append(noMac, inst)
+		}
+	}
+	p.Downloads.Installers = noMac
+	s = settings([]string{"mac"}, []string{"fr"}, true, false, false)
+	s.IncludePatches = true
+	if got := countKind(Plan(game, p, owned, s)[0].Files, db.KindPatch, "mac", "en"); got != 1 {
+		t.Errorf("mac patch without a mac installer: %d files, want the english fallback", got)
+	}
+	s.LanguageFallback = false
+	if got := countKind(Plan(game, p, owned, s)[0].Files, db.KindPatch, "mac", ""); got != 0 {
+		t.Errorf("without fallback: %d mac patch files planned", got)
+	}
+}

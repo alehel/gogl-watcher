@@ -53,6 +53,7 @@ export function GamePage() {
   // A game can opt in to what the library-wide settings leave out.
   const canOptInstallers = status ? !status.library.include_installers : false;
   const canOptDLC = status ? !status.library.include_dlc : false;
+  const canOptPatches = status ? !status.library.include_patches : false;
   const canOptExtras = status ? !status.library.include_extras : false;
   const canOptSaves = status ? !status.library.include_saves : false;
   // DESIGN MOCK: artwork is not a setting yet, so the opt-in is always offered and only lives on this page.
@@ -61,6 +62,7 @@ export function GamePage() {
   const gameOptions = (g: GameSummary): GameOptionsValue => ({
     include_installers: g.include_installers,
     include_dlc: g.include_dlc,
+    include_patches: g.include_patches,
     include_extras: g.include_extras,
     include_saves: g.include_saves,
   });
@@ -165,7 +167,7 @@ export function GamePage() {
         </div>
       </div>
 
-      {(canOptInstallers || canOptDLC || canOptExtras || canOptSaves || canOptArtwork) && (
+      {(canOptInstallers || canOptDLC || canOptPatches || canOptExtras || canOptSaves || canOptArtwork) && (
         <div className="check-list game-options" role="group" aria-label="Extra content for this game">
           {canOptInstallers && (
             <label className="check">
@@ -194,6 +196,23 @@ export function GamePage() {
               <span>
                 Also download DLC for this game
                 <span className="desc">The library settings leave DLC out; this game gets it anyway.</span>
+              </span>
+            </label>
+          )}
+          {canOptPatches && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={g.include_patches}
+                disabled={options.busy}
+                onChange={(e) => void options.setOptions({ ...gameOptions(g), include_patches: e.target.checked })}
+              />
+              <span>
+                Also download patches for this game
+                <span className="desc">
+                  The library settings leave patches out; GOG's updates from one installer version to the next are
+                  fetched for this game anyway, next to its installers.
+                </span>
               </span>
             </label>
           )}
@@ -339,8 +358,10 @@ function OfferProductSection({ product }: { product: OfferProduct }) {
   );
 }
 
+const OFFER_KIND_LABELS: Record<string, string> = { installer: "Installer", patch: "Patch", artwork: "Artwork" };
+
 function OfferRow({ item: it }: { item: OfferItem }) {
-  const kind = it.kind === "installer" ? "Installer" : it.kind === "artwork" ? "Artwork" : "Extra";
+  const kind = OFFER_KIND_LABELS[it.kind] ?? "Extra";
   return (
     <tr className={it.wanted ? "" : "dim"}>
       <td>{it.type ? `${kind} · ${it.type}` : kind}</td>
@@ -406,6 +427,7 @@ function ProductSection({ product, onChanged }: { product: Product; onChanged: (
 
 const FILE_KIND_LABELS: Record<string, string> = {
   installer: "Installer",
+  patch: "Patch",
   extra: "Extra",
   save: "Cloud save",
   artwork: "Artwork",

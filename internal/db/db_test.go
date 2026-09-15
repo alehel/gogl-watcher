@@ -61,7 +61,7 @@ func TestSettingsAddedLaterKeepTheOldBehaviour(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !s.IncludeInstallers || s.IncludeSaves {
+	if !s.IncludeInstallers || s.IncludeSaves || s.IncludePatches {
 		t.Errorf("old settings should keep downloading installers and nothing new: %+v", s)
 	}
 	s.IncludeInstallers = false
@@ -548,5 +548,43 @@ func TestListQueuedFilesFollowsTheDownloadOrder(t *testing.T) {
 		if i >= len(ids) || ids[i] != want[i] {
 			t.Fatalf("queue order = %v, want %v", ids, want)
 		}
+	}
+}
+
+// A game's opt-ins, patches included, survive the round trip; the settings
+// know that patches exist per platform and change the plan.
+func TestGameOptionsRoundTrip(t *testing.T) {
+	d := openTest(t)
+	ctx := context.Background()
+	if err := d.UpsertGame(ctx, Game{ID: 1, Title: "G", Folder: "G"}); err != nil {
+		t.Fatal(err)
+	}
+	want := GameOptions{Patches: true, Saves: true}
+	if err := d.SetGameOptions(ctx, 1, want); err != nil {
+		t.Fatal(err)
+	}
+	g, err := d.GetGame(ctx, 1)
+	if err != nil || g == nil {
+		t.Fatal(err)
+	}
+	if g.Options != want {
+		t.Errorf("options = %+v, want %+v", g.Options, want)
+	}
+	s := DefaultSettings()
+	s.IncludeInstallers, s.IncludeDLC = false, false
+	if s.NeedsPlatforms() {
+		t.Error("nothing per platform is wanted, so no platform is needed")
+	}
+	if !s.ForGame(*g).IncludePatches {
+		t.Error("the game's opt-in should switch patches on for it")
+	}
+	s.IncludePatches = true
+	if !s.NeedsPlatforms() {
+		t.Error("patches exist per platform, so one has to be chosen")
+	}
+	o := s
+	o.IncludePatches = false
+	if s.SamePlan(o) {
+		t.Error("the patches setting changes the plan")
 	}
 }

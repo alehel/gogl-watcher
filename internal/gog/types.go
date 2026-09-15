@@ -41,14 +41,17 @@ type Product struct {
 	} `json:"images"`
 }
 
-// Downloads groups the downloadable items of a product.
+// Downloads groups the downloadable items of a product. Patches are GOG's
+// updates from one version of an offline installer to the next, for the same
+// OS and language, and are described exactly like installers.
 type Downloads struct {
 	Installers   []Installer `json:"installers"`
 	Patches      []Installer `json:"patches"`
 	BonusContent []Bonus     `json:"bonus_content"`
 }
 
-// Installer is an offline installer for one OS and language, possibly split in parts.
+// Installer is an offline installer (or a patch for one) for one OS and
+// language, possibly split in parts.
 type Installer struct {
 	ID           string         `json:"id"`
 	Name         string         `json:"name"`

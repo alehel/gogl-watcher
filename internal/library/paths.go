@@ -109,9 +109,15 @@ func (p Paths) pruneEmpty(dir string) {
 	}
 }
 
+// PatchesDir is the folder, under an installer's language folder, that holds
+// the patches for that installer: they update what the installer beside them
+// installs, so they live next to it.
+const PatchesDir = "patches"
+
 // RelDir returns the directory (relative to the game folder) of a platform's
-// installers, each language of which gets a folder of its own under it, or of
-// the extras; cloud saves have SaveRelDir.
+// installers, each language of which gets a folder of its own under it (with
+// the language's patches in PatchesDir below that), or of the extras; cloud
+// saves have SaveRelDir.
 func RelDir(kind, os, dlcFolder string) string {
 	sub := os
 	if kind == "extra" {

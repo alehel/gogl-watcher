@@ -772,3 +772,256 @@ func TestApplySettingsStopsRunningGameSync(t *testing.T) {
 		t.Errorf("%d linux files planned by the next game sync", n)
 	}
 }
+
+// Patches are a content choice like extras: the library setting plans them
+// next to the installers, switching it off asks about the downloaded ones and
+// drops the rest, and a game can opt in on its own.
+func TestPatchesAreTheirOwnChoice(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	d, syncer, paths := newSyncTest(t, m)
+	ctx := context.Background()
+	s := saveSettings(t, d, "windows")
+	const witcher = 1207658924
+	kinds := func() map[string]int {
+		files, _ := d.ListActiveFilesByGame(ctx, witcher)
+		out := map[string]int{}
+		for _, f := range files {
+			out[f.Kind]++
+		}
+		return out
+	}
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := kinds()[db.KindPatch]; n != 0 {
+		t.Fatalf("%d patch files planned although patches are off", n)
+	}
+
+	s.IncludePatches = true
+	if err := syncer.ApplySettings(ctx, s, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before := kinds()
+	if before[db.KindPatch] != 2 || before[db.KindInstaller] != 3 {
+		t.Fatalf("expected the windows/en patch (2 parts) beside the installer (3 parts), got %v", before)
+	}
+	files, _ := d.ListActiveFilesByGame(ctx, witcher)
+	var patch db.File
+	for _, f := range files {
+		if f.Kind == db.KindPatch {
+			patch = f
+			break
+		}
+	}
+	if patch.RelDir != "windows/en/patches" || patch.OS != "windows" || patch.Language != "en" {
+		t.Errorf("patch planned as %+v, want windows/en/patches", patch)
+	}
+	// One patch part is downloaded, so switching patches off is a question.
+	rel := "The Witcher Enhanced Edition/windows/en/patches/patch.exe"
+	_ = os.MkdirAll(filepath.Dir(paths.Abs(rel)), 0o755)
+	_ = os.WriteFile(paths.Abs(rel), []byte("x"), 0o644)
+	if err := d.SetFileDone(ctx, patch.ID, rel, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	// The preview covers the whole library: every game's patches go.
+	all, _ := d.ListActiveFiles(ctx)
+	libraryPatches := 0
+	for _, f := range all {
+		if f.Kind == db.KindPatch {
+			libraryPatches++
+		}
+	}
+	if libraryPatches <= 2 {
+		t.Fatalf("the sample library should have more games with patches, got %d patch files", libraryPatches)
+	}
+	s.IncludePatches = false
+	p, err := syncer.PreviewSettings(ctx, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.NeedsConfirmation || p.Removed.Files != libraryPatches || p.Removed.DownloadedFiles != 1 || len(p.Reasons) != 1 || p.Reasons[0] != "patches" {
+		t.Fatalf("unexpected preview: %+v, want the %d patch files with 1 downloaded", p, libraryPatches)
+	}
+	if err := syncer.ApplySettings(ctx, s, ""); err == nil {
+		t.Fatal("applying without an answer must be refused")
+	}
+	if err := syncer.ApplySettings(ctx, s, RemovalKeep); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if after := kinds(); after[db.KindPatch] != 0 || after[db.KindInstaller] != before[db.KindInstaller] {
+		t.Fatalf("patches should be gone and installers kept, got %v", after)
+	}
+	if !paths.Exists(rel) {
+		t.Error("a kept patch was deleted")
+	}
+	if kept, _ := d.GetFile(ctx, patch.ID); kept == nil || kept.Active || kept.Status != db.StatusInactive {
+		t.Errorf("kept patch should be inactive: %+v", kept)
+	}
+
+	// The game opts back in on its own; the kept copy is picked up as done.
+	if err := syncer.SetGameOptions(ctx, witcher, db.GameOptions{Patches: true}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.SyncGame(ctx, witcher); err != nil {
+		t.Fatal(err)
+	}
+	if n := kinds()[db.KindPatch]; n != 2 {
+		t.Fatalf("want 2 patch files after the game opted in, got %d", n)
+	}
+	if got, _ := d.GetFile(ctx, patch.ID); got == nil || got.Status != db.StatusDone {
+		t.Errorf("the kept patch should be done again: %+v", got)
+	}
+	// Re-applying the library settings leaves an opted-in game alone.
+	if err := syncer.ApplySettings(ctx, s, ""); err != nil {
+		t.Fatal(err)
+	}
+	if n := kinds()[db.KindPatch]; n != 2 {
+		t.Errorf("re-applying the library settings dropped the game's own patches: %d left", n)
+	}
+	// Opting out again asks about the downloaded part and, on "delete", removes it.
+	err = syncer.SetGameOptions(ctx, witcher, db.GameOptions{}, "")
+	var cr *ErrConfirmationRequired
+	if !errors.As(err, &cr) || cr.Preview.Removed.DownloadedFiles != 1 {
+		t.Fatalf("opting out of a downloaded patch must ask, got %v", err)
+	}
+	if err := syncer.SetGameOptions(ctx, witcher, db.GameOptions{}, RemovalDelete); err != nil {
+		t.Fatal(err)
+	}
+	if n := kinds()[db.KindPatch]; n != 0 {
+		t.Errorf("%d patch files still tracked after the game opted out", n)
+	}
+	if paths.Exists(rel) {
+		t.Error("the deleted patch is still on disk")
+	}
+}
+
+// A patch GOG withdraws is no longer tracked, but a downloaded copy stays on
+// disk: it is what an installed game is updated with.
+func TestWithdrawnPatchStaysOnDisk(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	d, syncer, paths := newSyncTest(t, m)
+	ctx := context.Background()
+	s := saveSettings(t, d, "windows")
+	s.IncludePatches = true
+	_ = d.SaveSettings(ctx, s)
+	const witcher = 1207658924
+	if m.Games[0].Listed.ID != witcher {
+		t.Fatal("the sample library changed")
+	}
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := d.ListActiveFilesByGame(ctx, witcher)
+	var patches []db.File
+	for _, f := range files {
+		if f.Kind == db.KindPatch {
+			patches = append(patches, f)
+		}
+	}
+	if len(patches) != 2 {
+		t.Fatalf("want the 2 parts of the windows/en patch, got %d", len(patches))
+	}
+	rel := "The Witcher Enhanced Edition/windows/en/patches/patch.exe"
+	_ = os.MkdirAll(filepath.Dir(paths.Abs(rel)), 0o755)
+	_ = os.WriteFile(paths.Abs(rel), []byte("x"), 0o644)
+	if err := d.SetFileDone(ctx, patches[0].ID, rel, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	// GOG withdraws the patch.
+	m.Games[0].Product.Downloads.Patches = nil
+	if err := syncer.SyncGame(ctx, witcher); err != nil {
+		t.Fatal(err)
+	}
+	active, _ := d.ListActiveFilesByGame(ctx, witcher)
+	for _, f := range active {
+		if f.Kind == db.KindPatch {
+			t.Errorf("withdrawn patch still tracked: %+v", f)
+		}
+	}
+	if kept, _ := d.GetFile(ctx, patches[0].ID); kept == nil || kept.Active || kept.Status != db.StatusInactive {
+		t.Errorf("the downloaded part should be kept as inactive: %+v", kept)
+	}
+	if !paths.Exists(rel) {
+		t.Error("the withdrawn patch was deleted from disk")
+	}
+	if other, _ := d.GetFile(ctx, patches[1].ID); other != nil {
+		t.Errorf("the part never downloaded should be forgotten: %+v", other)
+	}
+}
+
+// A patch follows its installer's language, and so does the preview of a
+// language change: where the tracked patches come in fewer languages than
+// the installers, dropping an installer's language drops its patch too,
+// however the fallback would read the patches on their own.
+func TestPatchLanguageFollowsInstallerInPreview(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	d, syncer, _ := newSyncTest(t, m)
+	ctx := context.Background()
+	s := saveSettings(t, d, "windows")
+	s.Languages = []string{"en", "de"}
+	s.LanguageFallback = true
+	s.IncludePatches = true
+	_ = d.SaveSettings(ctx, s)
+	const witcher = 1207658924
+	// GOG has the Witcher's Windows installer in English and German, but the
+	// patch in English only.
+	p := &m.Games[0].Product
+	if p.ID != witcher {
+		t.Fatal("the sample library changed")
+	}
+	var patches []gog.Installer
+	for _, pt := range p.Downloads.Patches {
+		if pt.Language != "de" {
+			patches = append(patches, pt)
+		}
+	}
+	p.Downloads.Patches = patches
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tracked := func() map[string]int {
+		files, _ := d.ListActiveFilesByGame(ctx, witcher)
+		out := map[string]int{}
+		for _, f := range files {
+			out[f.Kind+"/"+f.Language]++
+		}
+		return out
+	}
+	got := tracked()
+	if got["installer/en"] != 3 || got["installer/de"] != 2 || got["patch/en"] != 2 || got["patch/de"] != 0 {
+		t.Fatalf("tracked files = %v", got)
+	}
+
+	// Only German from now on: the English installer goes, and with it the
+	// English patch, although no German patch exists to take its place.
+	ns := s
+	ns.Languages = []string{"de"}
+	preview, err := syncer.PreviewSettings(ctx, ns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Removed.Files != 5 || len(preview.Reasons) != 1 || preview.Reasons[0] != "language:en" {
+		t.Errorf("preview = %+v, want the 3 English installer parts and the 2 English patch parts dropped for language:en", preview)
+	}
+	if err := syncer.ApplySettings(ctx, ns, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got = tracked()
+	if got["installer/de"] != 2 || got["installer/en"] != 0 || got["patch/en"] != 0 || got["patch/de"] != 0 {
+		t.Errorf("after the change: %v, want the German installer and no patch", got)
+	}
+}

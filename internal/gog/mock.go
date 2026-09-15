@@ -406,29 +406,62 @@ type sampleInstaller struct {
 	parts             []int64 // sizes
 }
 
-func sampleProduct(id int64, title, slug string, installers []sampleInstaller, extras map[string]int64) Product {
+// samplePatch is GOG's update of an installer from one version to the next.
+type samplePatch struct {
+	os, lang, from, to string
+	parts              []int64 // sizes
+}
+
+var (
+	sampleOSCode       = map[string]string{"windows": "1", "mac": "2", "linux": "3"}
+	sampleLanguageFull = map[string]string{"en": "English", "de": "Deutsch", "fr": "français"}
+)
+
+// sampleExt is the extension of the i-th file of an installer or patch for
+// one OS: Windows installers come as an .exe with .bin parts.
+func sampleExt(os string, i int) string {
+	switch os {
+	case "linux":
+		return ".sh"
+	case "mac":
+		return ".pkg"
+	}
+	if i > 0 {
+		return fmt.Sprintf("-%d.bin", i)
+	}
+	return ".exe"
+}
+
+func sampleProduct(id int64, title, slug string, installers []sampleInstaller, extras map[string]int64, patches ...samplePatch) Product {
 	p := Product{ID: id, Title: title, Slug: slug}
-	osCode := map[string]string{"windows": "1", "mac": "2", "linux": "3"}
+	version := func(v string) string { return strings.ReplaceAll(v, " ", "_") }
 	for _, in := range installers {
 		inst := Installer{ID: fmt.Sprintf("installer_%s_%s", in.os, in.lang), Name: title, OS: in.os, Language: in.lang, Version: in.version}
-		inst.LanguageFull = map[string]string{"en": "English", "de": "Deutsch", "fr": "français"}[in.lang]
+		inst.LanguageFull = sampleLanguageFull[in.lang]
 		for i, sz := range in.parts {
-			fid := fmt.Sprintf("%s%sinstaller%d", in.lang, osCode[in.os], i)
-			ext := ".exe"
-			if i > 0 && in.os == "windows" {
-				ext = fmt.Sprintf("-%d.bin", i)
-			}
-			if in.os == "linux" {
-				ext = ".sh"
-			}
-			if in.os == "mac" {
-				ext = ".pkg"
-			}
-			name := fmt.Sprintf("setup_%s_%s%s", slug, strings.ReplaceAll(in.version, " ", "_"), ext)
+			fid := fmt.Sprintf("%s%sinstaller%d", in.lang, sampleOSCode[in.os], i)
+			name := fmt.Sprintf("setup_%s_%s%s", slug, version(in.version), sampleExt(in.os, i))
 			inst.Files = append(inst.Files, DownloadFile{ID: FlexString(fid), Size: FlexInt(sz), Downlink: MockDownlink(id, fid, name, sz)})
 			inst.TotalSize += FlexInt(sz)
 		}
 		p.Downloads.Installers = append(p.Downloads.Installers, inst)
+	}
+	// A patch is described like an installer, with the version it updates to as
+	// its version. Its file ids count on per OS and language ("en1patch0",
+	// "en1patch1", ...), as GOG's do.
+	nextPatchFile := map[string]int{}
+	for _, pt := range patches {
+		inst := Installer{ID: fmt.Sprintf("patch_%s_%s_%s", pt.os, pt.lang, version(pt.to)), Name: fmt.Sprintf("Patch %s → %s", pt.from, pt.to),
+			OS: pt.os, Language: pt.lang, Version: pt.to, LanguageFull: sampleLanguageFull[pt.lang]}
+		for i, sz := range pt.parts {
+			n := nextPatchFile[pt.os+pt.lang]
+			nextPatchFile[pt.os+pt.lang]++
+			fid := fmt.Sprintf("%s%spatch%d", pt.lang, sampleOSCode[pt.os], n)
+			name := fmt.Sprintf("patch_%s_%s_to_%s%s", slug, version(pt.from), version(pt.to), sampleExt(pt.os, i))
+			inst.Files = append(inst.Files, DownloadFile{ID: FlexString(fid), Size: FlexInt(sz), Downlink: MockDownlink(id, fid, name, sz)})
+			inst.TotalSize += FlexInt(sz)
+		}
+		p.Downloads.Patches = append(p.Downloads.Patches, inst)
 	}
 	// Deterministic ids: map iteration order changes between runs and the ids are
 	// what the database keys files by.
@@ -510,11 +543,15 @@ func SampleLibrary() []MockGame {
 		mk(1207658924, "The Witcher: Enhanced Edition", "the_witcher", true, true, false,
 			sampleProduct(1207658924, "The Witcher: Enhanced Edition", "the_witcher",
 				[]sampleInstaller{{"windows", "en", "1.5 (A)", []int64{8 * mb, 40 * mb, 40 * mb}}, {"windows", "de", "1.5 (A)", []int64{8 * mb, 40 * mb}}, {"mac", "en", "1.5", []int64{45 * mb}}},
-				map[string]int64{"Soundtrack": 12 * mb, "Manual": 2 * mb})),
+				map[string]int64{"Soundtrack": 12 * mb, "Manual": 2 * mb},
+				samplePatch{"windows", "en", "1.4", "1.5 (A)", []int64{3 * mb, 20 * mb}}, samplePatch{"windows", "de", "1.4", "1.5 (A)", []int64{3 * mb, 18 * mb}},
+				samplePatch{"mac", "en", "1.4", "1.5", []int64{18 * mb}})),
 		mk(1207664663, "Stardew Valley", "stardew_valley", true, true, true,
 			sampleProduct(1207664663, "Stardew Valley", "stardew_valley",
 				[]sampleInstaller{{"windows", "en", "1.6.15", []int64{30 * mb}}, {"linux", "en", "1.6.15", []int64{32 * mb}}, {"mac", "en", "1.6.15", []int64{31 * mb}}},
-				map[string]int64{"Soundtrack": 25 * mb})),
+				map[string]int64{"Soundtrack": 25 * mb},
+				samplePatch{"windows", "en", "1.6.14", "1.6.15", []int64{8 * mb}}, samplePatch{"linux", "en", "1.6.14", "1.6.15", []int64{9 * mb}},
+				samplePatch{"mac", "en", "1.6.14", "1.6.15", []int64{8 * mb}})),
 		mk(1207659212, "Broken Sword: Director's Cut", "broken_sword_directors_cut", true, true, false,
 			sampleProduct(1207659212, "Broken Sword: Director's Cut", "broken_sword_directors_cut",
 				[]sampleInstaller{{"windows", "en", "2.0", []int64{6 * mb, 20 * mb}}, {"mac", "en", "2.0", []int64{24 * mb}}},
@@ -522,13 +559,16 @@ func SampleLibrary() []MockGame {
 		mk(1207666633, "Cyberpunk 2077", "cyberpunk_2077", true, false, false,
 			sampleProduct(1207666633, "Cyberpunk 2077", "cyberpunk_2077",
 				[]sampleInstaller{{"windows", "en", "2.21", []int64{9 * mb, 60 * mb, 60 * mb, 60 * mb}}},
-				map[string]int64{"Soundtrack": 40 * mb, "Artbook": 15 * mb}),
+				map[string]int64{"Soundtrack": 40 * mb, "Artbook": 15 * mb},
+				samplePatch{"windows", "en", "2.13", "2.2", []int64{4 * mb, 30 * mb}}, samplePatch{"windows", "en", "2.2", "2.21", []int64{4 * mb, 35 * mb}}),
 			sampleProduct(1207666634, "Cyberpunk 2077: Phantom Liberty", "cyberpunk_2077_phantom_liberty",
-				[]sampleInstaller{{"windows", "en", "2.21", []int64{5 * mb, 50 * mb}}}, map[string]int64{"Phantom Liberty Soundtrack": 18 * mb})),
+				[]sampleInstaller{{"windows", "en", "2.21", []int64{5 * mb, 50 * mb}}}, map[string]int64{"Phantom Liberty Soundtrack": 18 * mb},
+				samplePatch{"windows", "en", "2.2", "2.21", []int64{12 * mb}})),
 		mk(1207661673, "Baldur's Gate II: Enhanced Edition", "baldurs_gate_2_enhanced_edition", true, true, true,
 			sampleProduct(1207661673, "Baldur's Gate II: Enhanced Edition", "baldurs_gate_2_enhanced_edition",
 				[]sampleInstaller{{"windows", "en", "2.6.6.0", []int64{7 * mb, 55 * mb}}, {"linux", "en", "2.6.6.0", []int64{58 * mb}}, {"mac", "en", "2.6.6.0", []int64{57 * mb}}},
-				map[string]int64{"Soundtrack": 20 * mb})),
+				map[string]int64{"Soundtrack": 20 * mb},
+				samplePatch{"windows", "en", "2.6.5.0", "2.6.6.0", []int64{10 * mb}})),
 		mk(1207658695, "Heroes of Might and Magic III: Complete", "heroes_of_might_and_magic_3_complete_edition", true, false, false,
 			sampleProduct(1207658695, "Heroes of Might and Magic III: Complete", "heroes_of_might_and_magic_3_complete_edition",
 				[]sampleInstaller{{"windows", "en", "4.0", []int64{25 * mb}}, {"windows", "fr", "4.0", []int64{25 * mb}}},

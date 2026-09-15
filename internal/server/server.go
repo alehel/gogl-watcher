@@ -309,6 +309,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	lib["download_mode"] = settings.DownloadMode
 	lib["include_installers"] = settings.IncludeInstallers
 	lib["include_dlc"] = settings.IncludeDLC
+	lib["include_patches"] = settings.IncludePatches
 	lib["include_extras"] = settings.IncludeExtras
 	lib["include_saves"] = settings.IncludeSaves
 	lib["bytes_total"] = bytesTotal
@@ -413,7 +414,7 @@ func (s *Server) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Log.Info("setup completed", "mode", settings.DownloadMode, "platforms", strings.Join(settings.Platforms, ","), "installers", settings.IncludeInstallers,
-		"dlc", settings.IncludeDLC, "extras", settings.IncludeExtras, "saves", settings.IncludeSaves)
+		"dlc", settings.IncludeDLC, "patches", settings.IncludePatches, "extras", settings.IncludeExtras, "saves", settings.IncludeSaves)
 	s.Downloads.Configure(settings, true)
 	s.Scheduler.TriggerNow()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -477,7 +478,7 @@ func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Log.Info("settings saved", "mode", ns.DownloadMode, "platforms", strings.Join(ns.Platforms, ","), "languages", strings.Join(ns.Languages, ","),
-		"installers", ns.IncludeInstallers, "dlc", ns.IncludeDLC, "extras", ns.IncludeExtras, "saves", ns.IncludeSaves, "concurrent", ns.MaxConcurrentDownloads,
+		"installers", ns.IncludeInstallers, "dlc", ns.IncludeDLC, "patches", ns.IncludePatches, "extras", ns.IncludeExtras, "saves", ns.IncludeSaves, "concurrent", ns.MaxConcurrentDownloads,
 		"speed_limit_kbps", ns.SpeedLimitKBps, "interval_hours", ns.CheckIntervalHours)
 	s.Downloads.Configure(ns, done)
 	if done && !old.SamePlan(ns) {
@@ -711,7 +712,7 @@ func (s *Server) handleGamesSelection(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGameOptions opts a game in to or out of base game installers, DLC,
-// extras and cloud saves on its own. Opting in syncs the game right away so
+// patches, extras and cloud saves on its own. Opting in syncs the game right away so
 // the files get planned; opting out may need the keep-or-delete answer for
 // downloaded files (409, like a settings change).
 func (s *Server) handleGameOptions(w http.ResponseWriter, r *http.Request) {
@@ -747,7 +748,7 @@ func (s *Server) handleGameOptions(w http.ResponseWriter, r *http.Request) {
 	settings, _ := s.DB.GetSettings(ctx)
 	done, _ := s.DB.SetupComplete(ctx)
 	o, was := body.GameOptions, before.Options
-	optedIn := (o.Installers && !was.Installers) || (o.DLC && !was.DLC) || (o.Extras && !was.Extras) || (o.Saves && !was.Saves)
+	optedIn := (o.Installers && !was.Installers) || (o.DLC && !was.DLC) || (o.Patches && !was.Patches) || (o.Extras && !was.Extras) || (o.Saves && !was.Saves)
 	if optedIn && done && settings.WantsGame(*before) && s.GOG.Authenticated() {
 		go func() {
 			sctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -758,7 +759,7 @@ func (s *Server) handleGameOptions(w http.ResponseWriter, r *http.Request) {
 			s.Downloads.Wake()
 		}()
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "include_installers": o.Installers, "include_dlc": o.DLC, "include_extras": o.Extras, "include_saves": o.Saves})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "include_installers": o.Installers, "include_dlc": o.DLC, "include_patches": o.Patches, "include_extras": o.Extras, "include_saves": o.Saves})
 }
 
 // handleGameOffer answers what GOG offers for a game without planning any of

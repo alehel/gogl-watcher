@@ -51,6 +51,9 @@ func unwantedReason(f db.File, game db.Game, isDLC bool, s db.Settings, offered 
 	if f.Kind == db.KindInstaller && !isDLC && !s.IncludeInstallers {
 		return "installers"
 	}
+	if f.Kind == db.KindPatch && !s.IncludePatches {
+		return "patches"
+	}
 	if f.Kind == db.KindExtra {
 		if !s.IncludeExtras {
 			return "extras"
@@ -72,23 +75,25 @@ func unwantedReason(f db.File, game db.Game, isDLC bool, s db.Settings, offered 
 	return ""
 }
 
-// offeredLanguages is, per product and platform, the languages of the tracked
-// installers: the choice the plan's language fallback picks between, as far as
-// it is known without asking GOG.
+// offeredLanguages is, per product, platform and kind, the languages of the
+// tracked installers (and, apart, of the tracked patches): the choice the
+// plan's language fallback picks between, as far as it is known without
+// asking GOG.
 type offeredLanguages map[languageKey][]string
 
 type languageKey struct {
 	product int64
 	os      string
+	kind    string
 }
 
 func offeredLanguagesOf(files []db.File) offeredLanguages {
 	out := offeredLanguages{}
 	for _, f := range files {
-		if f.Kind != db.KindInstaller {
+		if f.Kind != db.KindInstaller && f.Kind != db.KindPatch {
 			continue
 		}
-		k := languageKey{f.ProductID, f.OS}
+		k := languageKey{f.ProductID, f.OS, f.Kind}
 		if !slices.Contains(out[k], f.Language) {
 			out[k] = append(out[k], f.Language)
 		}
@@ -96,12 +101,19 @@ func offeredLanguagesOf(files []db.File) offeredLanguages {
 	return out
 }
 
-// fallsBackTo reports whether the fallback keeps f, an installer in a language
-// the settings do not select: it does only while none of the selected
-// languages exists for the same product and platform. Where one does, the plan
-// picks that one and drops f, whatever the fallback says.
+// fallsBackTo reports whether the fallback keeps f, an installer or patch in a
+// language the settings do not select: it does only while none of the selected
+// languages exists for the same product and platform. Where one does, the
+// plan picks that one and drops f, whatever the fallback says. A patch follows
+// its installer's language (see choosePatches), so the tracked installers
+// answer for it; while none is tracked, the tracked patches are the nearest
+// thing to go by.
 func (o offeredLanguages) fallsBackTo(f db.File, s db.Settings) bool {
-	for _, lang := range o[languageKey{f.ProductID, f.OS}] {
+	kind := f.Kind
+	if kind == db.KindPatch && len(o[languageKey{f.ProductID, f.OS, db.KindInstaller}]) > 0 {
+		kind = db.KindInstaller
+	}
+	for _, lang := range o[languageKey{f.ProductID, f.OS, kind}] {
 		if s.WantsLanguage(lang) {
 			return false
 		}
@@ -299,7 +311,7 @@ func (s *Syncer) ApplySettings(ctx context.Context, ns db.Settings, onRemoved Re
 }
 
 // SetGameOptions opts one game in to (or out of) base game installers, DLC,
-// extras and cloud saves regardless of the library-wide settings. Opting out
+// patches, extras and cloud saves regardless of the library-wide settings. Opting out
 // drops the files it no longer wants like a settings change does: onRemoved
 // must be answered when downloaded files are affected. Opting in never touches
 // files; the caller syncs the game afterwards so they get planned.
@@ -346,7 +358,7 @@ func (s *Syncer) SetGameOptions(ctx context.Context, id int64, o db.GameOptions,
 	s.offerMu.Lock()
 	delete(s.offers, id)
 	s.offerMu.Unlock()
-	s.log.Info("game options changed", "game", game.Title, "installers", o.Installers, "dlc", o.DLC, "extras", o.Extras, "saves", o.Saves)
+	s.log.Info("game options changed", "game", game.Title, "installers", o.Installers, "dlc", o.DLC, "patches", o.Patches, "extras", o.Extras, "saves", o.Saves)
 	return nil
 }
 

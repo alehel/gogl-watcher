@@ -339,6 +339,7 @@ function ContentStep({
   // The base game is what a backup is for, so it starts as yes; the rest are asked.
   const [installers, setInstallers] = useState<boolean>(chosen ? settings.include_installers : true);
   const [dlc, setDlc] = useState<boolean | null>(chosen ? settings.include_dlc : null);
+  const [patches, setPatches] = useState<boolean | null>(chosen ? settings.include_patches : null);
   const [extras, setExtras] = useState<boolean | null>(chosen ? settings.include_extras : null);
   const [saves, setSaves] = useState<boolean | null>(chosen ? settings.include_saves : null);
   // DESIGN MOCK: artwork is not a setting the backend knows yet; the answer is not saved.
@@ -346,7 +347,8 @@ function ContentStep({
   const [langs, setLangs] = useState<string[]>(settings.languages.length ? settings.languages : ["en"]);
   const [fallback, setFallback] = useState(settings.language_fallback);
 
-  const valid = dlc !== null && extras !== null && saves !== null && artwork !== null && langs.length > 0;
+  const valid =
+    dlc !== null && patches !== null && extras !== null && saves !== null && artwork !== null && langs.length > 0;
   const save = useStepSave(
     () =>
       putSettings(
@@ -354,6 +356,7 @@ function ContentStep({
           ...settings,
           include_installers: installers,
           include_dlc: dlc ?? false,
+          include_patches: patches ?? false,
           include_extras: extras ?? false,
           include_saves: saves ?? false,
           languages: langs,
@@ -381,6 +384,14 @@ function ContentStep({
         hint="Installers for downloadable content you own."
         value={dlc}
         onChange={setDlc}
+        disabled={save.busy}
+      />
+      <YesNo
+        name="patches"
+        label="Include patches"
+        hint="GOG's updates from one installer version to the next, in the languages the installers come in. With them, a game installed from an earlier offline installer can be brought up to date without the whole new installer."
+        value={patches}
+        onChange={setPatches}
         disabled={save.busy}
       />
       <YesNo
@@ -484,6 +495,8 @@ function FinishStep({
         <dd>{settings.include_installers ? "Included" : "Not included"}</dd>
         <dt>DLC</dt>
         <dd>{settings.include_dlc ? "Included" : "Not included"}</dd>
+        <dt>Patches</dt>
+        <dd>{settings.include_patches ? "Included" : "Not included"}</dd>
         <dt>Extras</dt>
         <dd>{settings.include_extras ? "Included" : "Not included"}</dd>
         <dt>Cloud saves</dt>
