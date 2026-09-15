@@ -2,7 +2,7 @@ import { useState } from "react";
 import { errorMessage, getLogs, type LogEntry, type LogLevel } from "../api";
 import { ApiErrorNotice, EmptyState, Loading, Spinner } from "../components/Common";
 import { useToast } from "../components/Toast";
-import { formatAbsolute, formatLogTime } from "../format";
+import { formatAbsolute, formatLogDate, formatLogTimeOfDay } from "../format";
 import { useDebounced, usePolling } from "../hooks";
 
 const LEVELS: Array<{ value: LogLevel; label: string }> = [
@@ -114,7 +114,8 @@ export function LogsPage() {
             {rows.map((r) => (
               <div key={r.id} className="log-row">
                 <span className="ts" title={formatAbsolute(r.ts)}>
-                  {formatLogTime(r.ts)}
+                  <span className="date">{formatLogDate(r.ts)}</span>
+                  {formatLogTimeOfDay(r.ts)}
                 </span>
                 <span className={`lvl ${r.level}`}>{r.level}</span>
                 <span className="comp" title={r.component}>

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { NetworkError } from "../api";
 import { useStatus } from "./StatusContext";
-import { IconClose } from "./Icons";
+import { IconClose, IconMenu, Logo } from "./Icons";
 
 const NAV = [
   { to: "/", label: "Dashboard", end: true },
@@ -32,7 +32,7 @@ function NavLinks({ onNavigate, activeDownloads }: { onNavigate?: () => void; ac
 export function Brand({ suffix }: { suffix?: string }) {
   return (
     <Link to="/" className="brand">
-      <span className="brand-dot" aria-hidden="true" />
+      <Logo />
       gogl-watcher{suffix ? ` ${suffix}` : ""}
     </Link>
   );
@@ -83,7 +83,7 @@ export function Layout() {
           <Brand />
           <span className="spacer" />
           <button className="btn text" onClick={() => setOpen(true)} aria-haspopup="dialog" aria-expanded={open}>
-            Menu
+            <IconMenu /> Menu
           </button>
         </header>
 

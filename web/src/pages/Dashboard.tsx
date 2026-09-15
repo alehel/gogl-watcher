@@ -175,10 +175,13 @@ function SyncSection({ status, onChanged }: { status: Status; onChanged: () => v
         <dd>{s.next_run_at ? <TimeAgo iso={s.next_run_at} /> : <span className="faint">not scheduled</span>}</dd>
         <dt>Last error</dt>
         <dd className={s.last_error ? "err-text" : "faint"}>{s.last_error || "none"}</dd>
+        <dt>Folder</dt>
+        <dd>
+          <span className="mono clip" title={status.disk.library_dir || undefined}>
+            {status.disk.library_dir || "—"}
+          </span>
+        </dd>
       </dl>
-      <div className="mono muted" title="Library folder">
-        {status.disk.library_dir || "—"}
-      </div>
     </section>
   );
 }
