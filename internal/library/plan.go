@@ -3,7 +3,6 @@ package library
 import (
 	"cmp"
 	"fmt"
-	"path"
 	"path/filepath"
 	"slices"
 
@@ -49,45 +48,6 @@ func Plan(game db.Game, p *gog.Product, owned gog.OwnedSet, s db.Settings) []Pla
 	return out
 }
 
-// keepLanguagesApart moves a planned installer into its language subfolder
-// when the flat folder is not its own. Installers of different languages often
-// share their file names, which is why several languages chosen together get
-// a subfolder each (see planFiles); a language chosen after another was
-// downloaded is planned flat, and its files would be written over the copies
-// kept from before. So the rows the game already has (existing, active or
-// not) decide: a file of another language in the flat folder, kept or waiting
-// to be replaced, claims it, and a part of this same installer that already
-// lives in the subfolder keeps the rest of it together.
-func keepLanguagesApart(game db.Game, planned []PlannedProduct, existing []db.File) {
-	for pi := range planned {
-		pp := &planned[pi]
-		for fi := range pp.Files {
-			f := &pp.Files[fi]
-			if f.Kind != db.KindInstaller || f.Language == "" {
-				continue
-			}
-			flat := RelDir(db.KindInstaller, f.OS, pp.Product.Folder)
-			if f.RelDir != flat {
-				continue // already in a subfolder of its own
-			}
-			sub := filepath.ToSlash(filepath.Join(flat, SanitizeFolder(f.Language)))
-			flatDir := LocalRelPath(game.Folder, flat, "")
-			subDir := LocalRelPath(game.Folder, sub, "")
-			for _, e := range existing {
-				if e.ProductID != f.ProductID || e.Kind != db.KindInstaller || e.OS != f.OS {
-					continue
-				}
-				taken := e.Language != f.Language && (path.Dir(e.LocalPath) == flatDir || path.Dir(e.PreviousPath) == flatDir)
-				started := e.Language == f.Language && path.Dir(e.LocalPath) == subDir
-				if taken || started {
-					f.RelDir = sub
-					break
-				}
-			}
-		}
-	}
-}
-
 // planFiles plans the files of one product: its installers when installers
 // says so, and its extras when the settings do.
 func planFiles(gameID, productID int64, dl gog.Downloads, dlcFolder string, s db.Settings, installers bool) []db.File {
@@ -104,13 +64,12 @@ func planFiles(gameID, productID int64, dl gog.Downloads, dlcFolder string, s db
 		chosen := chooseLanguages(byOS[os], s)
 		for _, inst := range chosen {
 			lang := db.NormalizeLanguage(inst.Language)
-			dir := RelDir("installer", os, dlcFolder)
-			if len(chosen) > 1 {
-				// Installers of different languages often share file names; give
-				// each language its own folder so they cannot overwrite each other.
-				// The parts of one installer stay together, which they must.
-				dir = filepath.ToSlash(filepath.Join(dir, SanitizeFolder(lang)))
-			}
+			// Installers of different languages often share their file names, so
+			// every installer goes into its language's folder, whether or not
+			// another language is chosen today: one chosen later, or kept from
+			// before, can then never be written over. The parts of one installer
+			// stay together, which they must.
+			dir := filepath.ToSlash(filepath.Join(RelDir("installer", os, dlcFolder), languageFolder(lang)))
 			for i, f := range inst.Files {
 				files = append(files, db.File{
 					GameID: gameID, ProductID: productID, Kind: "installer", OS: os, Language: lang,
@@ -132,6 +91,16 @@ func planFiles(gameID, productID int64, dl gog.Downloads, dlcFolder string, s db
 		}
 	}
 	return files
+}
+
+// languageFolder is the folder an installer's language gets under the
+// platform folder: GOG's code as normalized here ("en", "de", "esmx"), or a
+// fixed name for the rare installer GOG lists without one.
+func languageFolder(lang string) string {
+	if lang == "" {
+		return "unknown"
+	}
+	return SanitizeFolder(lang)
 }
 
 // fileID is the stable id of the i-th file of an installer or extra: GOG's own

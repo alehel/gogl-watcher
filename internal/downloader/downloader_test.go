@@ -2,9 +2,11 @@ package downloader
 
 import (
 	"context"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,6 +44,18 @@ func setup(t *testing.T) (*db.DB, *gog.Mock, library.Paths, *library.Syncer) {
 	paths := library.Paths{Root: filepath.Join(dir, "library")}
 	s := library.NewSyncer(d, m, paths, slog.Default())
 	return d, m, paths, s
+}
+
+// partFiles lists the partial downloads anywhere under root.
+func partFiles(root string) []string {
+	var parts []string
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".part") {
+			parts = append(parts, p)
+		}
+		return nil
+	})
+	return parts
 }
 
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
@@ -92,8 +106,8 @@ func TestDownloadsWholeLibrary(t *testing.T) {
 		if err != nil || st.Size() != f.Size {
 			t.Errorf("file %s missing or wrong size: %v", abs, err)
 		}
-		if filepath.Base(filepath.Dir(abs)) != "windows" {
-			t.Errorf("unexpected location %s", abs)
+		if dir := filepath.ToSlash(filepath.Dir(abs)); !strings.HasSuffix(dir, "/windows/en") {
+			t.Errorf("unexpected location %s, want the platform's language folder", abs)
 		}
 		if _, err := os.Stat(abs + ".part"); err == nil {
 			t.Errorf("part file left behind for %s", abs)
@@ -221,8 +235,7 @@ func TestDeselectingStopsRunningTransfers(t *testing.T) {
 	if len(files) != 0 {
 		t.Errorf("%d files still tracked", len(files))
 	}
-	parts, _ := filepath.Glob(filepath.Join(paths.Root, "*", "*", "*.part"))
-	if len(parts) != 0 {
+	if parts := partFiles(paths.Root); len(parts) != 0 {
 		t.Errorf("partial files left behind: %v", parts)
 	}
 }

@@ -14,9 +14,10 @@ import (
 )
 
 // Localized installers often share their file names. Switching the language
-// with the old installer kept used to plan the new language into the same flat
-// folder, and the download then replaced the kept copy, leaving the inactive
-// row pointing at the other language's bytes.
+// with the old installer kept used to plan the new language into the folder
+// the kept copy was in, and the download then replaced it, leaving the
+// inactive row pointing at the other language's bytes. Every language has a
+// folder of its own now, whenever it was chosen.
 func TestLanguageSwitchKeepsTheOtherLanguagesCopies(t *testing.T) {
 	d, m, paths, syncer := setup(t)
 	ctx, cancel := context.WithCancel(context.Background())
