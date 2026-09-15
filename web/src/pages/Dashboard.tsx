@@ -69,7 +69,7 @@ export function DashboardPage() {
         <p className="summary">{parts.join(" · ")}</p>
       </div>
 
-      <div>
+      <div className="overview">
         <div className="status-strip">
           <Item label="Games" value={l.games} />
           {selectedOnly && <Item label="Selected" value={wanted} />}

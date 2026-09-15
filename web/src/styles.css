@@ -639,14 +639,19 @@ input[type="radio"] {
 /* ============================================================ pages */
 
 /* ---- dashboard */
-/* Figures set on an even baseline: dividers between them would hang in mid-air
-   wherever the row wraps, so the spacing does that work instead. */
+/* One column width for every figure, so a wrapped row lines up under the one
+   above it instead of landing wherever the widest label happened to end. The
+   track is as wide as the longest value ("335.8 MB of 1.5 GB") needs. */
+/* The rule and the library bar span the page; the figures inside them do not. */
+.overview { border-top: 1px solid var(--border); }
 .status-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px 36px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px 20px;
+  /* Four tracks on a desktop, which the eight figures fill exactly, rather than
+     the seven a full-width row would fit and leave one figure stranded under. */
+  max-width: 760px;
   padding: 12px 0;
-  border-top: 1px solid var(--border);
 }
 .status-strip .item {
   display: flex;
