@@ -48,6 +48,9 @@ func unwantedReason(f db.File, game db.Game, isDLC bool, s db.Settings, offered 
 	if isDLC && !s.IncludeDLC {
 		return "dlc"
 	}
+	if f.Kind == db.KindInstaller && !isDLC && !s.IncludeInstallers {
+		return "installers"
+	}
 	if f.Kind == db.KindExtra {
 		if !s.IncludeExtras {
 			return "extras"
@@ -295,12 +298,12 @@ func (s *Syncer) ApplySettings(ctx context.Context, ns db.Settings, onRemoved Re
 	return s.db.SaveSettings(ctx, ns)
 }
 
-// SetGameOptions opts one game in to (or out of) DLC, extras and cloud saves
-// regardless of the library-wide settings. Opting out drops the files it no
-// longer wants like a settings change does: onRemoved must be answered when
-// downloaded files are affected. Opting in never touches files; the caller
-// syncs the game afterwards so they get planned.
-func (s *Syncer) SetGameOptions(ctx context.Context, id int64, dlc, extras, saves bool, onRemoved RemovalAction) error {
+// SetGameOptions opts one game in to (or out of) base game installers, DLC,
+// extras and cloud saves regardless of the library-wide settings. Opting out
+// drops the files it no longer wants like a settings change does: onRemoved
+// must be answered when downloaded files are affected. Opting in never touches
+// files; the caller syncs the game afterwards so they get planned.
+func (s *Syncer) SetGameOptions(ctx context.Context, id int64, o db.GameOptions, onRemoved RemovalAction) error {
 	defer s.lockGame(id)()
 	game, err := s.db.GetGame(ctx, id)
 	if err != nil {
@@ -313,7 +316,7 @@ func (s *Syncer) SetGameOptions(ctx context.Context, id int64, dlc, extras, save
 	if err != nil {
 		return err
 	}
-	game.IncludeDLC, game.IncludeExtras, game.IncludeSaves = dlc, extras, saves
+	game.Options = o
 	files, err := s.db.ListActiveFilesByGame(ctx, id)
 	if err != nil {
 		return err
@@ -336,14 +339,14 @@ func (s *Syncer) SetGameOptions(ctx context.Context, id int64, dlc, extras, save
 	if err := s.dropFiles(ctx, list, onRemoved, "changing the game's options"); err != nil {
 		return err
 	}
-	if err := s.db.SetGameOptions(ctx, id, dlc, extras, saves); err != nil {
+	if err := s.db.SetGameOptions(ctx, id, o); err != nil {
 		return err
 	}
 	// The cached offer marked what the old options would download.
 	s.offerMu.Lock()
 	delete(s.offers, id)
 	s.offerMu.Unlock()
-	s.log.Info("game options changed", "game", game.Title, "dlc", dlc, "extras", extras, "saves", saves)
+	s.log.Info("game options changed", "game", game.Title, "installers", o.Installers, "dlc", o.DLC, "extras", o.Extras, "saves", o.Saves)
 	return nil
 }
 

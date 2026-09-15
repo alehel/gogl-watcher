@@ -196,7 +196,7 @@ func TestGameOptsIntoCloudSavesOnItsOwn(t *testing.T) {
 	if n := len(saveFiles(t, d, stardew)); n != 0 {
 		t.Fatalf("%d saves planned although saves are off", n)
 	}
-	if err := syncer.SetGameOptions(ctx, stardew, false, false, true, ""); err != nil {
+	if err := syncer.SetGameOptions(ctx, stardew, db.GameOptions{Saves: true}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := syncer.SyncGame(ctx, stardew); err != nil {
@@ -205,7 +205,7 @@ func TestGameOptsIntoCloudSavesOnItsOwn(t *testing.T) {
 	if n := len(saveFiles(t, d, stardew)); n == 0 {
 		t.Fatal("no saves planned after the game opted in")
 	}
-	if err := syncer.SetGameOptions(ctx, stardew, false, false, false, ""); err != nil {
+	if err := syncer.SetGameOptions(ctx, stardew, db.GameOptions{}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(saveFiles(t, d, stardew)); n != 0 {

@@ -609,6 +609,52 @@ func TestSortSummariesDownloadedFirst(t *testing.T) {
 	check("updated, downloaded first", "updated", true, "Delta", "Bravo", "Charlie", "Alpha")
 }
 
+// Without base game installers or DLC, no platform is needed: a saves-only
+// or extras-only backup does not have to pick one.
+func TestPlatformsOnlyNeededForInstallers(t *testing.T) {
+	srv, _ := newTestServer(t)
+	if code, _ := call(t, srv, "POST", "/api/auth/code", map[string]string{"code": "abc"}); code != 200 {
+		t.Fatal("auth failed")
+	}
+	_, settings := call(t, srv, "GET", "/api/settings", nil)
+	if settings["include_installers"] != true {
+		t.Fatalf("installers should be on by default: %v", settings)
+	}
+	settings["download_mode"] = "all"
+	settings["platforms"] = []string{}
+	settings["content_chosen"] = true
+	settings["include_installers"] = false
+	settings["include_dlc"] = false
+	settings["include_saves"] = true
+	if code, out := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings}); code != 200 {
+		t.Fatalf("save settings: %d %v", code, out)
+	}
+	if _, st := call(t, srv, "GET", "/api/status", nil); st["setup_step"] != "done" {
+		t.Errorf("setup should have nothing left to ask, got %v", st["setup_step"])
+	}
+	if code, out := call(t, srv, "POST", "/api/setup/complete", nil); code != 200 {
+		t.Fatalf("complete: %d %v", code, out)
+	}
+	waitGames(t, srv, 10)
+	waitSyncIdle(t, srv)
+	// Only saves get planned: Stardew Valley has them, The Witcher has nothing.
+	for _, p := range gameByID(t, srv, "1207664663")["products"].([]any) {
+		for _, f := range p.(map[string]any)["files"].([]any) {
+			if f.(map[string]any)["kind"] != "save" {
+				t.Errorf("planned something other than a save: %v", f)
+			}
+		}
+	}
+	if g := gameByID(t, srv, "1207658924")["game"].(map[string]any); g["files_total"].(float64) != 0 || g["status"] != "unavailable" {
+		t.Errorf("a game without saves should have nothing planned: %v", g)
+	}
+	// With installers back on, a platform is required again.
+	settings["include_installers"] = true
+	if code, out := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings}); code != 400 {
+		t.Fatalf("installers without a platform should be refused: %d %v", code, out)
+	}
+}
+
 // A game opts in to cloud saves on its own when the library-wide setting is
 // off; the status and the game's summary say so, and its saves get planned.
 func TestGameOptsIntoCloudSaves(t *testing.T) {
@@ -650,7 +696,7 @@ func TestGameOptsIntoCloudSaves(t *testing.T) {
 	if n := countSaves(); n != 0 {
 		t.Fatalf("%d saves tracked with saves off", n)
 	}
-	code, out := call(t, srv, "PUT", "/api/games/"+stardew+"/options", map[string]any{"include_dlc": false, "include_extras": false, "include_saves": true})
+	code, out := call(t, srv, "PUT", "/api/games/"+stardew+"/options", map[string]any{"include_saves": true})
 	if code != 200 || out["include_saves"] != true {
 		t.Fatalf("options: %d %v", code, out)
 	}

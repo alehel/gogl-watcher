@@ -557,7 +557,7 @@ func TestGameOptsIntoExtrasOnItsOwn(t *testing.T) {
 		t.Fatalf("%d extras planned although extras are off", n)
 	}
 
-	if err := syncer.SetGameOptions(ctx, witcher, false, true, false, ""); err != nil {
+	if err := syncer.SetGameOptions(ctx, witcher, db.GameOptions{Extras: true}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := syncer.SyncGame(ctx, witcher); err != nil {
@@ -574,11 +574,83 @@ func TestGameOptsIntoExtrasOnItsOwn(t *testing.T) {
 		t.Fatal("re-applying the library settings dropped the game's own extras")
 	}
 
-	if err := syncer.SetGameOptions(ctx, witcher, false, false, false, ""); err != nil {
+	if err := syncer.SetGameOptions(ctx, witcher, db.GameOptions{}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if n := extras(); n != 0 {
 		t.Fatalf("%d extras still tracked after the game opted out", n)
+	}
+}
+
+// Switching the base game installers off keeps the rest and asks about the
+// installers already downloaded, like every other content setting.
+func TestSettingsWithoutBaseGameInstallers(t *testing.T) {
+	m, _ := gog.NewMock(context.Background(), nil)
+	_, _ = m.ExchangeCode(context.Background(), "code")
+	d, syncer, paths := newSyncTest(t, m)
+	ctx := context.Background()
+	s := saveSettings(t, d, "windows")
+	s.IncludeExtras = true
+	_ = d.SaveSettings(ctx, s)
+	const witcher = 1207658924
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	kinds := func() map[string]int {
+		files, _ := d.ListActiveFilesByGame(ctx, witcher)
+		out := map[string]int{}
+		for _, f := range files {
+			out[f.Kind]++
+		}
+		return out
+	}
+	before := kinds()
+	if before[db.KindInstaller] == 0 || before[db.KindExtra] == 0 {
+		t.Fatalf("expected installers and extras, got %v", before)
+	}
+	files, _ := d.ListActiveFilesByGame(ctx, witcher)
+	var inst db.File
+	for _, f := range files {
+		if f.Kind == db.KindInstaller {
+			inst = f
+			break
+		}
+	}
+	rel := "The Witcher/windows/setup.exe"
+	_ = os.MkdirAll(filepath.Dir(paths.Abs(rel)), 0o755)
+	_ = os.WriteFile(paths.Abs(rel), []byte("x"), 0o644)
+	_ = d.SetFileDone(ctx, inst.ID, rel, 1)
+
+	s.IncludeInstallers = false
+	p, err := syncer.PreviewSettings(ctx, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.NeedsConfirmation || p.Removed.DownloadedFiles != 1 || len(p.Reasons) != 1 || p.Reasons[0] != "installers" {
+		t.Fatalf("unexpected preview: %+v", p)
+	}
+	if err := syncer.ApplySettings(ctx, s, RemovalKeep); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	after := kinds()
+	if after[db.KindInstaller] != 0 || after[db.KindExtra] != before[db.KindExtra] {
+		t.Fatalf("installers should be gone and extras kept, got %v", after)
+	}
+	if !paths.Exists(rel) {
+		t.Error("a kept installer was deleted")
+	}
+	// The game opts back in on its own.
+	if err := syncer.SetGameOptions(ctx, witcher, db.GameOptions{Installers: true}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.SyncGame(ctx, witcher); err != nil {
+		t.Fatal(err)
+	}
+	if kinds()[db.KindInstaller] == 0 {
+		t.Error("no installers planned after the game opted in")
 	}
 }
 

@@ -48,10 +48,12 @@ export function GamePage() {
   const selectedOnly = selectsGames(status?.library.download_mode);
   const options = useGameOptions(id, game.refresh);
   // A game can opt in to what the library-wide settings leave out.
+  const canOptInstallers = status ? !status.library.include_installers : false;
   const canOptDLC = status ? !status.library.include_dlc : false;
   const canOptExtras = status ? !status.library.include_extras : false;
   const canOptSaves = status ? !status.library.include_saves : false;
   const gameOptions = (g: GameSummary): GameOptionsValue => ({
+    include_installers: g.include_installers,
     include_dlc: g.include_dlc,
     include_extras: g.include_extras,
     include_saves: g.include_saves,
@@ -157,8 +159,24 @@ export function GamePage() {
         </div>
       </div>
 
-      {(canOptDLC || canOptExtras || canOptSaves) && (
+      {(canOptInstallers || canOptDLC || canOptExtras || canOptSaves) && (
         <div className="check-list game-options" role="group" aria-label="Extra content for this game">
+          {canOptInstallers && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={g.include_installers}
+                disabled={options.busy}
+                onChange={(e) => void options.setOptions({ ...gameOptions(g), include_installers: e.target.checked })}
+              />
+              <span>
+                Also download the base game installers for this game
+                <span className="desc">
+                  The library settings leave the games themselves out; this one is fetched anyway.
+                </span>
+              </span>
+            </label>
+          )}
           {canOptDLC && (
             <label className="check">
               <input

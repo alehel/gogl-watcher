@@ -167,6 +167,9 @@ func (d *DB) migrate() error {
 	if err := d.addColumn("games", "include_saves", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := d.addColumn("games", "include_installers", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	return d.migrateDownloadMode()
 }
 
@@ -266,8 +269,12 @@ type Settings struct {
 	Languages        []string `json:"languages"`
 	LanguageFallback bool     `json:"language_fallback"`
 	ContentChosen    bool     `json:"content_chosen"`
-	IncludeDLC       bool     `json:"include_dlc"`
-	IncludeExtras    bool     `json:"include_extras"`
+	// IncludeInstallers downloads the offline installers of the base games. It
+	// is on unless switched off: settings stored before it existed leave it out,
+	// and those installations were downloading them.
+	IncludeInstallers bool `json:"include_installers"`
+	IncludeDLC        bool `json:"include_dlc"`
+	IncludeExtras     bool `json:"include_extras"`
 	// IncludeSaves backs up the cloud saves of the games that have any.
 	IncludeSaves           bool `json:"include_saves"`
 	MaxConcurrentDownloads int  `json:"max_concurrent_downloads"`
@@ -282,6 +289,7 @@ func DefaultSettings() Settings {
 		Platforms:              []string{},
 		Languages:              []string{"en"},
 		LanguageFallback:       true,
+		IncludeInstallers:      true,
 		IncludeDLC:             true,
 		IncludeExtras:          false,
 		MaxConcurrentDownloads: 2,
@@ -365,8 +373,8 @@ func (s Settings) SamePlan(o Settings) bool {
 	return s.DownloadMode == o.DownloadMode &&
 		strings.Join(s.Platforms, ",") == strings.Join(o.Platforms, ",") &&
 		strings.Join(s.Languages, ",") == strings.Join(o.Languages, ",") &&
-		s.LanguageFallback == o.LanguageFallback && s.IncludeDLC == o.IncludeDLC && s.IncludeExtras == o.IncludeExtras &&
-		s.IncludeSaves == o.IncludeSaves
+		s.LanguageFallback == o.LanguageFallback && s.IncludeInstallers == o.IncludeInstallers && s.IncludeDLC == o.IncludeDLC &&
+		s.IncludeExtras == o.IncludeExtras && s.IncludeSaves == o.IncludeSaves
 }
 
 // SelectedOnly reports whether only selected games are downloaded (whether the
@@ -387,13 +395,18 @@ func (s Settings) WantsGame(g Game) bool {
 }
 
 // ForGame returns the settings as they apply to one game: the library-wide
-// settings, with DLC, extras and cloud saves switched on where the game opted in.
+// settings, with each kind of content switched on where the game opted in.
 func (s Settings) ForGame(g Game) Settings {
-	s.IncludeDLC = s.IncludeDLC || g.IncludeDLC
-	s.IncludeExtras = s.IncludeExtras || g.IncludeExtras
-	s.IncludeSaves = s.IncludeSaves || g.IncludeSaves
+	s.IncludeInstallers = s.IncludeInstallers || g.Options.Installers
+	s.IncludeDLC = s.IncludeDLC || g.Options.DLC
+	s.IncludeExtras = s.IncludeExtras || g.Options.Extras
+	s.IncludeSaves = s.IncludeSaves || g.Options.Saves
 	return s
 }
+
+// NeedsPlatforms reports whether the settings download anything that exists
+// per platform, so that at least one platform has to be chosen.
+func (s Settings) NeedsPlatforms() bool { return s.IncludeInstallers || s.IncludeDLC }
 
 // WantsPlatform reports whether os is selected.
 func (s Settings) WantsPlatform(os string) bool { return slices.Contains(s.Platforms, os) }
@@ -401,7 +414,9 @@ func (s Settings) WantsPlatform(os string) bool { return slices.Contains(s.Platf
 // WantsLanguage reports whether lang is selected.
 func (s Settings) WantsLanguage(lang string) bool { return slices.Contains(s.Languages, lang) }
 
-// GetSettings loads the stored settings, falling back to defaults.
+// GetSettings loads the stored settings, falling back to defaults. A setting
+// the stored ones do not mention keeps its default, which is how a setting
+// added later gets the value the older installation was behaving as.
 func (d *DB) GetSettings(ctx context.Context) (Settings, error) {
 	s := DefaultSettings()
 	raw, err := d.GetKV(ctx, "settings")
@@ -527,15 +542,22 @@ type Game struct {
 	Owned           bool
 	Tags            []string // the user's own gog.com tags on the game, sorted
 	Selected        bool     // chosen for download (only matters in the "selected" download mode)
-	// IncludeDLC, IncludeExtras and IncludeSaves opt this game into DLC, extras
-	// and cloud saves when the settings leave them out for the library as a whole.
-	IncludeDLC      bool
-	IncludeExtras   bool
-	IncludeSaves    bool
+	// Options opt this game into content the settings leave out for the
+	// library as a whole.
+	Options         GameOptions
 	DetailsSyncedAt *time.Time
 	DetailsError    string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+}
+
+// GameOptions are a game's own opt-ins: each kind of content it wants even
+// when the library-wide settings leave it out.
+type GameOptions struct {
+	Installers bool `json:"include_installers"`
+	DLC        bool `json:"include_dlc"`
+	Extras     bool `json:"include_extras"`
+	Saves      bool `json:"include_saves"`
 }
 
 // Cover is the artwork to show for the game: the portrait cover when GOG has
@@ -705,19 +727,19 @@ func (d *DB) GetGame(ctx context.Context, id int64) (*Game, error) {
 	return &gs[0], nil
 }
 
-const gameSelect = `SELECT id, title, slug, image, box_art, box_art_checked_at, folder, works_windows, works_mac, works_linux, owned, selected, include_dlc, include_extras, include_saves, details_synced_at, details_error, created_at, updated_at FROM games`
+const gameSelect = `SELECT id, title, slug, image, box_art, box_art_checked_at, folder, works_windows, works_mac, works_linux, owned, selected, include_installers, include_dlc, include_extras, include_saves, details_synced_at, details_error, created_at, updated_at FROM games`
 
 func scanGame(rows *sql.Rows) (Game, error) {
 	var g Game
-	var ww, wm, wl, owned, selected, dlc, extras, saves int
+	var ww, wm, wl, owned, selected, installers, dlc, extras, saves int
 	var synced, artChecked sql.NullInt64
 	var created, updated int64
-	err := rows.Scan(&g.ID, &g.Title, &g.Slug, &g.Image, &g.BoxArt, &artChecked, &g.Folder, &ww, &wm, &wl, &owned, &selected, &dlc, &extras, &saves, &synced, &g.DetailsError, &created, &updated)
+	err := rows.Scan(&g.ID, &g.Title, &g.Slug, &g.Image, &g.BoxArt, &artChecked, &g.Folder, &ww, &wm, &wl, &owned, &selected, &installers, &dlc, &extras, &saves, &synced, &g.DetailsError, &created, &updated)
 	if err != nil {
 		return g, err
 	}
 	g.WorksWindows, g.WorksMac, g.WorksLinux, g.Owned, g.Selected = ww == 1, wm == 1, wl == 1, owned == 1, selected == 1
-	g.IncludeDLC, g.IncludeExtras, g.IncludeSaves = dlc == 1, extras == 1, saves == 1
+	g.Options = GameOptions{Installers: installers == 1, DLC: dlc == 1, Extras: extras == 1, Saves: saves == 1}
 	if synced.Valid {
 		t := time.UnixMilli(synced.Int64)
 		g.DetailsSyncedAt = &t
@@ -765,10 +787,10 @@ func (d *DB) SetGamesSelected(ctx context.Context, ids []int64, selected bool) e
 	return err
 }
 
-// SetGameOptions stores a game's own DLC, extras and cloud save opt-ins.
-func (d *DB) SetGameOptions(ctx context.Context, id int64, dlc, extras, saves bool) error {
-	_, err := d.ExecContext(ctx, `UPDATE games SET include_dlc = ?, include_extras = ?, include_saves = ?, updated_at = ? WHERE id = ?`,
-		b2i(dlc), b2i(extras), b2i(saves), time.Now().UnixMilli(), id)
+// SetGameOptions stores a game's own opt-ins.
+func (d *DB) SetGameOptions(ctx context.Context, id int64, o GameOptions) error {
+	_, err := d.ExecContext(ctx, `UPDATE games SET include_installers = ?, include_dlc = ?, include_extras = ?, include_saves = ?, updated_at = ? WHERE id = ?`,
+		b2i(o.Installers), b2i(o.DLC), b2i(o.Extras), b2i(o.Saves), time.Now().UnixMilli(), id)
 	return err
 }
 

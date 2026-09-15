@@ -226,6 +226,8 @@ export function describeReason(reason: string, languages: LanguageOption[]): str
       const name = languages.find((l) => l.code === arg)?.name ?? arg;
       return `Language "${name}" is no longer selected`;
     }
+    case "installers":
+      return "Base game installers are no longer included";
     case "dlc":
       return "DLC is no longer included";
     case "extras":

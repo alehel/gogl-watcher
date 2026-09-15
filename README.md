@@ -10,8 +10,10 @@ limit bandwidth and concurrency.
 ## Features
 
 - **Full or selected library** – download every game you own, or only the games you tick in
-  the library (nothing is selected until you do). Installers (Windows / macOS / Linux, your
-  choice), owned DLC and optionally extras (soundtracks, manuals, artbooks…) are organised as
+  the library (nothing is selected until you do). Each kind of content is a choice of its own:
+  the base game installers (Windows / macOS / Linux, your choice), owned DLC, extras
+  (soundtracks, manuals, artbooks…) and cloud saves, so a backup of only the extras or only
+  the saves is possible too. They are organised as
   `library/<Game>/<os>/…`, `library/<Game>/dlc/<DLC>/<os>/…` and `library/<Game>/extras/…`
   (when installers in several languages are wanted, each language gets its own
   `library/<Game>/<os>/<lang>/…` folder, since their file names are often identical).
@@ -54,16 +56,18 @@ Open <http://localhost:8080>. On first start the setup wizard walks you through:
    no game is selected to begin with: tick games in the library afterwards and their installers
    are fetched right away. Large libraries usually want this.
 3. **Platforms** – pick which installer platforms you want (at least one).
-4. **Content** – choose whether to include DLC, extras and cloud saves, and which installer
-   languages.
+4. **Content** – choose whether to include the base game installers, DLC, extras and cloud
+   saves, and which installer languages. A platform is only required while installers or DLC
+   are included.
 
 The first library sync starts immediately afterwards and downloads begin (for selected games
 only, in that mode).
 
 ### Configuration
 
-Everything about *what* to download (download mode, platforms, languages, DLC/extras/cloud
-saves, concurrency, speed limit, check interval, pause) is configured in the web UI under **Settings**
+Everything about *what* to download (download mode, platforms, languages, base game
+installers/DLC/extras/cloud saves, concurrency, speed limit, check interval, pause) is
+configured in the web UI under **Settings**
 and stored in the database; installations set up before the download mode existed keep
 downloading everything. The environment only controls *where* and *how* the process runs:
 
@@ -158,7 +162,8 @@ Traefik with forward auth) before exposing it beyond your LAN.
 - **Sync** (`internal/library`): fetches the owned product ids and the account game list, then
   each game's download manifest from `api.gog.com` (in "selected games only" mode, only for
   selected games; the rest are just listed). For every game it plans the wanted files
-  from your settings (platforms, languages with optional fallback, DLC, extras) and reconciles
+  from your settings (base game installers, platforms, languages with optional fallback, DLC,
+  extras) and reconciles
   them with the database: new files become *pending*, files that really changed become
   *pending* again (the old file is deleted after the new one succeeds), files that are no
   longer offered are marked *inactive*.

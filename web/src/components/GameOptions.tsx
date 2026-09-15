@@ -4,6 +4,7 @@ import {
   getLanguages,
   previewFromError,
   setGameOptions,
+  type GameOptions,
   type OnRemoved,
   type SettingsPreview,
 } from "../api";
@@ -11,11 +12,7 @@ import { useAsync } from "../hooks";
 import { RemovalConfirmModal } from "./SettingsFields";
 import { useToast } from "./Toast";
 
-export interface GameOptionsValue {
-  include_dlc: boolean;
-  include_extras: boolean;
-  include_saves: boolean;
-}
+export type GameOptionsValue = GameOptions;
 
 interface Pending {
   options: GameOptionsValue;
@@ -23,7 +20,7 @@ interface Pending {
 }
 
 /**
- * Opts one game in to or out of DLC, extras and cloud saves on its own. Opting out of downloaded
+ * Opts one game in to or out of base game installers, DLC, extras and cloud saves on its own. Opting out of downloaded
  * files makes the backend ask whether to keep or delete them; the hook shows that
  * dialog and re-submits with the answer. Render `modal` somewhere in the page.
  */

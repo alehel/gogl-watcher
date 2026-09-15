@@ -11,6 +11,7 @@ import {
   type OnRemoved,
   type Settings,
   type SettingsPreview,
+  needsPlatforms,
   selectsGames,
 } from "../api";
 import { ApiErrorNotice, Checkbox, Loading, Spinner } from "../components/Common";
@@ -104,7 +105,7 @@ function SettingsForm({
   const dirty = JSON.stringify(form) !== JSON.stringify(initial);
   const valid =
     form.download_mode !== "" &&
-    form.platforms.length > 0 &&
+    (form.platforms.length > 0 || !needsPlatforms(form)) &&
     form.languages.length > 0 &&
     form.max_concurrent_downloads >= CONCURRENCY.min &&
     form.max_concurrent_downloads <= CONCURRENCY.max &&
@@ -178,7 +179,12 @@ function SettingsForm({
         <section className="form-section">
           <h2>Platforms</h2>
           <PlatformPicker value={form.platforms} onChange={(v) => set("platforms", v)} disabled={busy} />
-          {form.platforms.length === 0 && <span className="err-text small">Pick at least one platform.</span>}
+          {form.platforms.length === 0 &&
+            (needsPlatforms(form) ? (
+              <span className="err-text small">Pick at least one platform.</span>
+            ) : (
+              <span className="hint">Not needed while neither base game installers nor DLC are included.</span>
+            ))}
         </section>
         <section className="form-section">
           <h2>Languages</h2>
@@ -199,6 +205,13 @@ function SettingsForm({
         <section className="form-section">
           <h2>Content</h2>
           <div className="check-list">
+            <Checkbox
+              checked={form.include_installers}
+              onChange={(v) => set("include_installers", v)}
+              label="Include base game installers"
+              desc="The offline installers of the games themselves. Switch off to keep only DLC, extras or cloud saves."
+              disabled={busy}
+            />
             <Checkbox
               checked={form.include_dlc}
               onChange={(v) => set("include_dlc", v)}

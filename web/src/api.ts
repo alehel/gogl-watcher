@@ -57,7 +57,8 @@ export interface LibraryTotals {
   unsynced: number;
   unselected: number;
   download_mode: DownloadMode;
-  /** The library-wide DLC, extras and cloud save settings; a game can opt in on its own when they are off. */
+  /** The library-wide content settings; a game can opt in on its own when they are off. */
+  include_installers: boolean;
   include_dlc: boolean;
   include_extras: boolean;
   include_saves: boolean;
@@ -97,6 +98,8 @@ export interface Settings {
   languages: string[];
   language_fallback: boolean;
   content_chosen: boolean;
+  /** The offline installers of the base games themselves. */
+  include_installers: boolean;
   include_dlc: boolean;
   include_extras: boolean;
   /** Back up the cloud saves of games that have any. */
@@ -143,7 +146,8 @@ export interface GameSummary {
   owned: boolean;
   /** Chosen for download; only meaningful when the download mode selects games. */
   selected: boolean;
-  /** The game's own DLC, extras and cloud save opt-ins; they matter when the library-wide setting is off. */
+  /** The game's own content opt-ins; they matter when the library-wide setting is off. */
+  include_installers: boolean;
   include_dlc: boolean;
   include_extras: boolean;
   include_saves: boolean;
@@ -377,12 +381,21 @@ export const getGames = (query: GamesQuery = {}) =>
   request<{ games: GameSummary[]; tags: Tag[] }>("GET", `/api/games${qs(query)}`);
 export const getGame = (id: number | string) => request<GameDetail>("GET", `/api/games/${id}`);
 export const getGameOffer = (id: number | string) => request<Offer>("GET", `/api/games/${id}/offer`);
-/** Opts a game in to or out of DLC, extras and cloud saves on its own. Opting out of downloaded files needs `onRemoved` (409 otherwise). */
-export const setGameOptions = (
-  id: number | string,
-  options: { include_dlc: boolean; include_extras: boolean; include_saves: boolean },
-  onRemoved: OnRemoved = null,
-) => request<{ ok: true }>("PUT", `/api/games/${id}/options`, { ...options, on_removed: onRemoved });
+/** A game's own content opt-ins. */
+export interface GameOptions {
+  include_installers: boolean;
+  include_dlc: boolean;
+  include_extras: boolean;
+  include_saves: boolean;
+}
+
+/** Whether these settings download anything that exists per platform, so a platform has to be chosen. */
+export const needsPlatforms = (s: Pick<Settings, "include_installers" | "include_dlc">) =>
+  s.include_installers || s.include_dlc;
+
+/** Opts a game in to or out of base game installers, DLC, extras and cloud saves on its own. Opting out of downloaded files needs `onRemoved` (409 otherwise). */
+export const setGameOptions = (id: number | string, options: GameOptions, onRemoved: OnRemoved = null) =>
+  request<{ ok: true }>("PUT", `/api/games/${id}/options`, { ...options, on_removed: onRemoved });
 export const syncGame = (id: number | string) => request<{ ok: true }>("POST", `/api/games/${id}/sync`);
 export const retryGame = (id: number | string) => request<{ ok: true }>("POST", `/api/games/${id}/retry`);
 export const retryFile = (id: number | string) => request<{ ok: true }>("POST", `/api/files/${id}/retry`);
