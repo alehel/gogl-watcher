@@ -17,9 +17,9 @@ import (
 // visit, and an offer changes about as often as an installer does.
 const offerTTL = 10 * time.Minute
 
-// Offer is what GOG has on offer for a game: every installer and extra of the
-// game and its owned DLC, with the ones the current settings would download
-// marked. It is a read-only look at GOG for a game that is not selected, so
+// Offer is what GOG has on offer for a game: every installer, patch and extra
+// of the game and its owned DLC, with the ones the current settings would
+// download marked. It is a read-only look at GOG for a game that is not selected, so
 // the user can see what selecting it would fetch. Nothing of it is planned or
 // queued.
 type Offer struct {
@@ -38,9 +38,9 @@ type OfferProduct struct {
 	Items []OfferItem `json:"items"`
 }
 
-// OfferItem is one installer (possibly in several parts) or one extra.
+// OfferItem is one installer or patch (possibly in several parts) or one extra.
 type OfferItem struct {
-	Kind     string `json:"kind"` // "installer" or "extra"
+	Kind     string `json:"kind"` // "installer", "patch" or "extra"
 	OS       string `json:"os"`
 	Language string `json:"language"`
 	Name     string `json:"name"`
@@ -101,38 +101,46 @@ func (s *Syncer) Offer(ctx context.Context, id int64) (*Offer, error) {
 // ErrGameNotFound is returned for an id that is not in the library.
 var ErrGameNotFound = errors.New("game not in library")
 
+// kindOrder is the order the kinds of an offer are listed in.
+var kindOrder = map[string]int{db.KindInstaller: 0, db.KindPatch: 1, db.KindExtra: 2}
+
 func buildOffer(game db.Game, p *gog.Product, owned gog.OwnedSet, settings db.Settings) *Offer {
 	// The plan knows which files the settings pick; an item is wanted when the
 	// plan contains one of its files.
 	wanted := map[string]bool{}
 	for _, pp := range Plan(game, p, owned, settings) {
 		for _, f := range pp.Files {
-			wanted[fmt.Sprintf("%d/%s", f.ProductID, f.GogID)] = true
+			wanted[fmt.Sprintf("%d/%s/%s", f.ProductID, f.Kind, f.GogID)] = true
 		}
 	}
 	out := &Offer{FetchedAt: time.Now()}
 	add := func(prod gog.Product, isDLC bool, title string) {
 		op := OfferProduct{ID: prod.ID, Title: title, IsDLC: isDLC, Items: []OfferItem{}}
-		for _, inst := range prod.Downloads.Installers {
-			item := OfferItem{Kind: "installer", OS: db.NormalizePlatform(inst.OS), Language: db.NormalizeLanguage(inst.Language),
-				Name: inst.Name, Version: inst.Version, Files: len(inst.Files)}
-			for i, f := range inst.Files {
-				item.Size += int64(f.Size)
-				item.Wanted = item.Wanted || wanted[fmt.Sprintf("%d/%s", prod.ID, fileID(string(f.ID), inst.ID, i))]
+		installers := func(kind string, list []gog.Installer) {
+			for _, inst := range list {
+				item := OfferItem{Kind: kind, OS: db.NormalizePlatform(inst.OS), Language: db.NormalizeLanguage(inst.Language),
+					Name: inst.Name, Version: inst.Version, Files: len(inst.Files)}
+				for i, f := range inst.Files {
+					item.Size += int64(f.Size)
+					item.Wanted = item.Wanted || wanted[fmt.Sprintf("%d/%s/%s", prod.ID, kind, fileID(string(f.ID), inst.ID, i))]
+				}
+				op.Items = append(op.Items, item)
 			}
-			op.Items = append(op.Items, item)
 		}
+		installers(db.KindInstaller, prod.Downloads.Installers)
+		installers(db.KindPatch, prod.Downloads.Patches)
 		for _, b := range prod.Downloads.BonusContent {
-			item := OfferItem{Kind: "extra", Name: b.Name, Type: b.Type, Files: len(b.Files)}
+			item := OfferItem{Kind: db.KindExtra, Name: b.Name, Type: b.Type, Files: len(b.Files)}
 			for i, f := range b.Files {
 				item.Size += int64(f.Size)
-				item.Wanted = item.Wanted || wanted[fmt.Sprintf("%d/%s", prod.ID, fileID(string(f.ID), string(b.ID), i))]
+				item.Wanted = item.Wanted || wanted[fmt.Sprintf("%d/%s/%s", prod.ID, db.KindExtra, fileID(string(f.ID), string(b.ID), i))]
 			}
 			op.Items = append(op.Items, item)
 		}
-		// Installers first, then extras; both in GOG's order within an OS and language.
+		// Installers first, then patches, then extras; each in GOG's order within
+		// an OS and language.
 		slices.SortStableFunc(op.Items, func(a, b OfferItem) int {
-			return cmp.Or(cmp.Compare(b.Kind, a.Kind), cmp.Compare(a.OS, b.OS), cmp.Compare(a.Language, b.Language))
+			return cmp.Or(cmp.Compare(kindOrder[a.Kind], kindOrder[b.Kind]), cmp.Compare(a.OS, b.OS), cmp.Compare(a.Language, b.Language))
 		})
 		for _, it := range op.Items {
 			if it.Wanted {

@@ -185,7 +185,7 @@ function SettingsForm({
             (needsPlatforms(form) ? (
               <span className="err-text small">Pick at least one platform.</span>
             ) : (
-              <span className="hint">Not needed while neither base game installers nor DLC are included.</span>
+              <span className="hint">Not needed while neither base game installers, DLC nor patches are included.</span>
             ))}
         </section>
         <section className="form-section">
@@ -219,6 +219,13 @@ function SettingsForm({
               onChange={(v) => set("include_dlc", v)}
               label="Include DLC"
               desc="Installers for downloadable content you own."
+              disabled={busy}
+            />
+            <Checkbox
+              checked={form.include_patches}
+              onChange={(v) => set("include_patches", v)}
+              label="Include patches"
+              desc="GOG's updates from one installer version to the next, for the chosen platforms and languages. A game installed from an earlier offline installer can be brought up to date with them instead of being reinstalled. They go in a patches folder next to the installer."
               disabled={busy}
             />
             <Checkbox

@@ -724,3 +724,109 @@ func TestGameOptsIntoCloudSaves(t *testing.T) {
 		t.Errorf("summary should carry the opt-in: %v", g)
 	}
 }
+
+// Patches are a content setting of their own: the status carries it, a game
+// can opt in on its own, its patches are then listed after its installers
+// with the kind "patch", and the library setting needs a platform like the
+// installers do.
+func TestGameOptsIntoPatches(t *testing.T) {
+	srv, _ := newTestServer(t)
+	if code, _ := call(t, srv, "POST", "/api/auth/code", map[string]string{"code": "abc"}); code != 200 {
+		t.Fatal("auth failed")
+	}
+	_, settings := call(t, srv, "GET", "/api/settings", nil)
+	if settings["include_patches"] != false {
+		t.Fatalf("patches should be off by default: %v", settings)
+	}
+	settings["download_mode"] = "all"
+	settings["platforms"] = []string{"windows"}
+	settings["content_chosen"] = true
+	if code, out := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings}); code != 200 {
+		t.Fatalf("save settings: %d %v", code, out)
+	}
+	if code, out := call(t, srv, "POST", "/api/setup/complete", nil); code != 200 {
+		t.Fatalf("complete: %d %v", code, out)
+	}
+	waitGames(t, srv, 10)
+	waitSyncIdle(t, srv)
+	_, st := call(t, srv, "GET", "/api/status", nil)
+	if st["library"].(map[string]any)["include_patches"] != false {
+		t.Errorf("status should carry the patches setting: %v", st["library"])
+	}
+	const witcher = "1207658924"
+	kinds := func() []string {
+		var out []string
+		for _, p := range gameByID(t, srv, witcher)["products"].([]any) {
+			for _, f := range p.(map[string]any)["files"].([]any) {
+				out = append(out, f.(map[string]any)["kind"].(string))
+			}
+		}
+		return out
+	}
+	count := func(kind string) int {
+		n := 0
+		for _, k := range kinds() {
+			if k == kind {
+				n++
+			}
+		}
+		return n
+	}
+	if n := count("patch"); n != 0 {
+		t.Fatalf("%d patch files tracked with patches off", n)
+	}
+	code, out := call(t, srv, "PUT", "/api/games/"+witcher+"/options", map[string]any{"include_patches": true})
+	if code != 200 || out["include_patches"] != true {
+		t.Fatalf("options: %d %v", code, out)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && count("patch") < 2 {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if got := kinds(); !slices.Equal(got, []string{"installer", "installer", "installer", "patch", "patch"}) {
+		t.Fatalf("files after opting in = %v, want the installer parts, then the patch parts", got)
+	}
+	if g := gameByID(t, srv, witcher)["game"].(map[string]any); g["include_patches"] != true {
+		t.Errorf("summary should carry the opt-in: %v", g)
+	}
+
+	// Patches only, for the library: a platform is needed for them.
+	_, settings = call(t, srv, "GET", "/api/settings", nil)
+	settings["include_installers"] = false
+	settings["include_dlc"] = false
+	settings["include_patches"] = true
+	settings["platforms"] = []string{}
+	if code, out := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings}); code != 400 {
+		t.Fatalf("patches without a platform should be refused: %d %v", code, out)
+	}
+	settings["platforms"] = []string{"windows"}
+	if code, out := call(t, srv, "PUT", "/api/settings", map[string]any{"settings": settings}); code != 200 {
+		t.Fatalf("save settings: %d %v", code, out)
+	}
+	_, st = call(t, srv, "GET", "/api/status", nil)
+	if st["library"].(map[string]any)["include_patches"] != true {
+		t.Errorf("status should carry the patches setting: %v", st["library"])
+	}
+	// The sync the change triggers plans the patches of every game and nothing else.
+	const stardew = "1207664663"
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		g := gameByID(t, srv, stardew)["game"].(map[string]any)
+		if g["files_total"].(float64) == 1 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	waitSyncIdle(t, srv)
+	for _, p := range gameByID(t, srv, stardew)["products"].([]any) {
+		for _, f := range p.(map[string]any)["files"].([]any) {
+			fm := f.(map[string]any)
+			if fm["kind"] != "patch" || fm["os"] != "windows" || fm["language"] != "en" {
+				t.Errorf("planned something other than the windows/en patch: %v", fm)
+			}
+		}
+	}
+	if g := gameByID(t, srv, stardew)["game"].(map[string]any); g["files_total"].(float64) != 1 {
+		t.Errorf("stardew should have its one patch file planned: %v", g)
+	}
+}

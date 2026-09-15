@@ -1,15 +1,18 @@
 # gogl-watcher
 
 Keeps an offline copy of your GOG library. It downloads the offline installers (and
-optionally DLC, extras and cloud saves) of every game you own or only the games you pick,
+optionally DLC, patches, extras and cloud saves) of every game you own or only the games you pick,
 re-checks GOG on a schedule so new games and updated installers are fetched automatically,
 and serves a web UI to manage it all.
 
-- One folder per game under `/library`: `<Game>/<os>/<language>/…`, `<Game>/dlc/…`, `<Game>/extras/…`,
-  `<Game>/saves/…`.
+- One folder per game under `/library`: `<Game>/<os>/<language>/…`, `<Game>/<os>/<language>/patches/…`,
+  `<Game>/dlc/…`, `<Game>/extras/…`, `<Game>/saves/…`.
 - Updated installers replace the old file only after the new download has verified (MD5
   against GOG's checksum). Resumable downloads, parallel transfers, global speed limit.
-- What to download (mode, platforms, languages, DLC/extras/saves, concurrency, speed limit,
+- Patches are optional: GOG's updates from one installer version to the next, so a game
+  installed from an earlier offline installer can be brought up to date without the whole
+  new installer. They are kept next to the installer they update.
+- What to download (mode, platforms, languages, DLC/patches/extras/saves, concurrency, speed limit,
   check interval) is set in the web UI, not in the environment.
 - No built-in authentication. Keep it on a private network or behind a reverse proxy.
 
@@ -62,7 +65,10 @@ To build the image from source instead, run `make docker` and point `image:` at
 
 - GOG has no public API; the app uses the same endpoints as the GOG Galaxy client, like
   lgogdownloader and Heroic's gogdl. If GOG changes them, syncs fail until the app is updated.
-- Only offline installers, DLC, extras and cloud saves are handled, not Galaxy depot builds.
+- Only offline installers, their patches, DLC, extras and cloud saves are handled, not Galaxy
+  depot builds.
+- Only the patches GOG offers right now are fetched. A patch GOG withdraws is no longer
+  tracked, but a downloaded copy stays on disk (shown as inactive).
 - Cloud saves are a one-way mirror of the newest version in the cloud. Nothing is uploaded,
   deleted or restored automatically.
 - Removing a game from your account does not delete its folder.

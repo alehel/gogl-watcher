@@ -28,6 +28,10 @@ func TestProductDecodingTolerance(t *testing.T) {
 	      {"id": "installer_windows_en", "name": "The Witcher", "os": "windows", "language": "en", "language_full": "English",
 	       "version": null, "total_size": "1234", "files": [{"id": "en1installer0", "size": 1234, "downlink": "https://api.gog.com/products/1/downlink/installer/en1installer0"}]}
 	    ],
+	    "patches": [
+	      {"id": "patch_windows_en_1.5", "name": "Patch 1.4 → 1.5", "os": "windows", "language": "en", "language_full": "English",
+	       "version": "1.5", "total_size": "200", "files": [{"id": "en1patch0", "size": "200", "downlink": "https://api.gog.com/products/1/downlink/patch/en1patch0"}]}
+	    ],
 	    "bonus_content": [
 	      {"id": 55, "name": "manual", "type": "manuals", "count": 1, "total_size": 10.0,
 	       "files": [{"id": 9876, "size": "10", "downlink": "https://api.gog.com/products/1/downlink/manuals/9876"}]}
@@ -42,6 +46,11 @@ func TestProductDecodingTolerance(t *testing.T) {
 	inst := p.Downloads.Installers[0]
 	if inst.Version != "" || inst.TotalSize != 1234 || inst.Files[0].Size != 1234 || string(inst.Files[0].ID) != "en1installer0" {
 		t.Errorf("unexpected installer: %+v", inst)
+	}
+	patch := p.Downloads.Patches[0]
+	if patch.Version != "1.5" || patch.OS != "windows" || patch.Language != "en" || patch.TotalSize != 200 ||
+		string(patch.Files[0].ID) != "en1patch0" || patch.Files[0].Size != 200 {
+		t.Errorf("unexpected patch: %+v", patch)
 	}
 	b := p.Downloads.BonusContent[0]
 	if string(b.ID) != "55" || b.TotalSize != 10 || string(b.Files[0].ID) != "9876" || b.Files[0].Size != 10 {

@@ -195,3 +195,69 @@ func TestDownloadRefusesToWriteOverAnotherFile(t *testing.T) {
 		t.Errorf("a taken path is final, not retried: %d attempts", failed.Attempts)
 	}
 }
+
+// Patches are downloaded like installers, into the patches folder under the
+// installer's language folder, next to the installer they update.
+func TestPatchesAreDownloadedNextToTheirInstaller(t *testing.T) {
+	d, m, paths, syncer := setup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The Witcher only, with tiny patch files.
+	m.Games = m.Games[:1]
+	p := &m.Games[0].Product
+	for ii := range p.Downloads.Patches {
+		for fi := range p.Downloads.Patches[ii].Files {
+			f := &p.Downloads.Patches[ii].Files[fi]
+			f.Size = 4000 + gog.FlexInt(fi)
+			f.Downlink = gog.MockDownlink(p.ID, string(f.ID), "patch_"+string(f.ID)+".bin", int64(f.Size))
+		}
+	}
+	settings := db.DefaultSettings()
+	settings.Platforms = []string{"windows"}
+	settings.IncludeDLC = false
+	settings.IncludePatches = true
+	settings.ContentChosen = true
+	settings.DownloadMode = db.DownloadAll
+	if err := d.SaveSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	_ = d.SetSetupComplete(ctx, true)
+	if err := syncer.SyncAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mgr := New(d, m, paths, slog.Default())
+	mgr.Configure(settings, true)
+	go mgr.Run(ctx)
+	waitFor(t, 20*time.Second, func() bool {
+		counts, _ := d.CountFilesByStatus(ctx)
+		return counts[db.StatusPending] == 0 && len(mgr.Active()) == 0
+	})
+	files, _ := d.ListActiveFiles(ctx)
+	installers, patches := 0, 0
+	for _, f := range files {
+		if f.Status != db.StatusDone {
+			t.Errorf("not downloaded: %+v", f)
+			continue
+		}
+		if st, err := os.Stat(paths.Abs(f.LocalPath)); err != nil {
+			t.Errorf("%s: %v", f.LocalPath, err)
+		} else if st.Size() != f.Size {
+			t.Errorf("%s: %d bytes on disk, want %d", f.LocalPath, st.Size(), f.Size)
+		}
+		switch f.Kind {
+		case db.KindInstaller:
+			installers++
+			if !strings.HasPrefix(f.LocalPath, "The Witcher Enhanced Edition/windows/en/file_") {
+				t.Errorf("installer downloaded to %s, want the language folder", f.LocalPath)
+			}
+		case db.KindPatch:
+			patches++
+			if !strings.HasPrefix(f.LocalPath, "The Witcher Enhanced Edition/windows/en/patches/patch_") {
+				t.Errorf("patch downloaded to %s, want the patches folder next to the installer", f.LocalPath)
+			}
+		}
+	}
+	if installers != 3 || patches != 2 {
+		t.Errorf("want 3 installer parts and 2 patch parts downloaded, got %d and %d", installers, patches)
+	}
+}

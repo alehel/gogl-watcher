@@ -49,35 +49,17 @@ func Plan(game db.Game, p *gog.Product, owned gog.OwnedSet, s db.Settings) []Pla
 }
 
 // planFiles plans the files of one product: its installers when installers
-// says so, and its extras when the settings do.
+// says so, and its patches and extras when the settings do.
 func planFiles(gameID, productID int64, dl gog.Downloads, dlcFolder string, s db.Settings, installers bool) []db.File {
 	var files []db.File
-	byOS := map[string][]gog.Installer{}
-	for _, inst := range dl.Installers {
-		os := db.NormalizePlatform(inst.OS)
-		byOS[os] = append(byOS[os], inst)
+	if installers {
+		files = append(files, planInstallers(gameID, productID, db.KindInstaller, dl.Installers, dlcFolder, s)...)
 	}
-	if !installers {
-		byOS = nil
-	}
-	for _, os := range s.Platforms {
-		chosen := chooseLanguages(byOS[os], s)
-		for _, inst := range chosen {
-			lang := db.NormalizeLanguage(inst.Language)
-			// Installers of different languages often share their file names, so
-			// every installer goes into its language's folder, whether or not
-			// another language is chosen today: one chosen later, or kept from
-			// before, can then never be written over. The parts of one installer
-			// stay together, which they must.
-			dir := filepath.ToSlash(filepath.Join(RelDir("installer", os, dlcFolder), languageFolder(lang)))
-			for i, f := range inst.Files {
-				files = append(files, db.File{
-					GameID: gameID, ProductID: productID, Kind: "installer", OS: os, Language: lang,
-					GogID: fileID(string(f.ID), inst.ID, i), Name: inst.Name, Version: inst.Version, Size: int64(f.Size), Downlink: f.Downlink,
-					RelDir: dir,
-				})
-			}
-		}
+	if s.IncludePatches {
+		// Patches are offered per platform and language like installers, and
+		// picked the same way: the patch for a German installer is of no use
+		// to an English one.
+		files = append(files, planInstallers(gameID, productID, db.KindPatch, dl.Patches, dlcFolder, s)...)
 	}
 	if s.IncludeExtras {
 		for _, b := range dl.BonusContent {
@@ -91,6 +73,48 @@ func planFiles(gameID, productID int64, dl gog.Downloads, dlcFolder string, s db
 		}
 	}
 	return files
+}
+
+// planInstallers plans the installers (or patches, which GOG describes the
+// same way) of one product for the chosen platforms and languages.
+func planInstallers(gameID, productID int64, kind string, installers []gog.Installer, dlcFolder string, s db.Settings) []db.File {
+	var files []db.File
+	byOS := map[string][]gog.Installer{}
+	for _, inst := range installers {
+		os := db.NormalizePlatform(inst.OS)
+		byOS[os] = append(byOS[os], inst)
+	}
+	for _, os := range s.Platforms {
+		chosen := chooseLanguages(byOS[os], s)
+		for _, inst := range chosen {
+			lang := db.NormalizeLanguage(inst.Language)
+			dir := installerDir(kind, os, lang, dlcFolder)
+			for i, f := range inst.Files {
+				files = append(files, db.File{
+					GameID: gameID, ProductID: productID, Kind: kind, OS: os, Language: lang,
+					GogID: fileID(string(f.ID), inst.ID, i), Name: inst.Name, Version: inst.Version, Size: int64(f.Size), Downlink: f.Downlink,
+					RelDir: dir,
+				})
+			}
+		}
+	}
+	return files
+}
+
+// installerDir is the folder, relative to the game folder, of an installer or
+// a patch in one language. Installers of different languages often share their
+// file names, so every installer goes into its language's folder, whether or
+// not another language is chosen today: one chosen later, or kept from before,
+// can then never be written over. The parts of one installer stay together,
+// which they must. Patches go into a folder of their own under the language
+// folder, next to the installer they update: the installer's folder stays what
+// it was, and the patches for it are found in one place.
+func installerDir(kind, os, lang, dlcFolder string) string {
+	dir := filepath.Join(RelDir("installer", os, dlcFolder), languageFolder(lang))
+	if kind == db.KindPatch {
+		dir = filepath.Join(dir, PatchesDir)
+	}
+	return filepath.ToSlash(dir)
 }
 
 // languageFolder is the folder an installer's language gets under the
@@ -112,7 +136,7 @@ func fileID(id, parent string, i int) string {
 	return id
 }
 
-// chooseLanguages picks the installers to download for one OS.
+// chooseLanguages picks the installers (or patches) to download for one OS.
 func chooseLanguages(installers []gog.Installer, s db.Settings) []gog.Installer {
 	var chosen []gog.Installer
 	for _, inst := range installers {

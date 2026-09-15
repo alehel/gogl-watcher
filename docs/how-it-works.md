@@ -4,12 +4,22 @@
   each game's download manifest from `api.gog.com` (in "selected games only" mode, only for
   selected games; the rest are just listed). For every game it plans the wanted files
   from your settings (base game installers, platforms, languages with optional fallback, DLC,
-  extras) and reconciles them with the database: new files become *pending*, files that
+  patches, extras) and reconciles them with the database: new files become *pending*, files that
   really changed become *pending* again (the old file is deleted after the new one succeeds),
   files that are no longer offered are marked *inactive*. Installers of different languages
   often share their file names, so every installer goes into its language's folder
   (`<Game>/<os>/<language>/`), and a download never writes over a file that belongs to
   another tracked one.
+- **Patches** (`internal/library/plan.go`): GOG publishes patches (the update from one
+  version of an offline installer to the next) in the same manifest as the installers, per
+  platform and language, and describes them the same way. With patches switched on (for the
+  library, or for one game on its page) they are picked like installers, by platform and
+  language with the same fallback, and stored under the installer's language folder in
+  `patches/` (`<Game>/<os>/<language>/patches/`, or `<Game>/dlc/<DLC>/<os>/<language>/patches/`),
+  next to the installer they update. They are tracked like installers: a patch GOG replaces
+  under the same id is fetched again and the old copy removed once the new one is verified,
+  and a patch GOG withdraws is marked *inactive* and left on disk, so an installed game can
+  still be updated with it.
 - **Deciding that a file changed** (`internal/library/sync.go`): GOG publishes no build
   identity for offline installers, so three signals are combined, cheapest first. The
   installer's version string and manifest size come with the manifest and cost nothing, but
