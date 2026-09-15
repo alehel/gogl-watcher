@@ -349,7 +349,11 @@ function GamesTable({
                 <GameStatusDot status={g.status} />
               </td>
               <td>
-                {inProgress(g) ? <ProgressBar value={g.progress} showPercent tone={gameStatusTone(g.status)} /> : null}
+                {/* Nothing started yet is already said by the status; an empty
+                    trough on every pending row only adds to the noise. */}
+                {inProgress(g) && g.progress > 0 ? (
+                  <ProgressBar value={g.progress} showPercent tone={gameStatusTone(g.status)} />
+                ) : null}
               </td>
               <td className="muted">
                 <TimeAgo iso={g.last_synced_at} />
@@ -378,7 +382,9 @@ function GridItem({
       <Link to={`/library/${game.id}`} className="grid-item">
         <div className="cover">
           <CoverImage src={game.image} lazy />
-          {inProgress(game) && <ProgressBar line value={game.progress} tone={gameStatusTone(game.status)} />}
+          {inProgress(game) && game.progress > 0 && (
+            <ProgressBar line value={game.progress} tone={gameStatusTone(game.status)} />
+          )}
         </div>
         <div className="title" title={game.title}>
           {game.title}

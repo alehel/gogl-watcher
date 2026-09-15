@@ -8,6 +8,18 @@ const base = (props: P) => ({
   ...props,
 });
 
+/**
+ * The app mark, the same drawing as the favicon. It is filled rather than
+ * stroked, so it is kept out of the currentColor icon set above.
+ */
+export const Logo = (p: P) => (
+  <svg className="brand-mark" viewBox="0 0 32 32" aria-hidden="true" {...p}>
+    <rect width="32" height="32" rx="7" fill="var(--accent)" />
+    <path d="M9 11h14v10H9z" fill="none" stroke="var(--surface)" strokeWidth="2.2" />
+    <path d="M13 15h6" stroke="var(--surface)" strokeWidth="2.2" strokeLinecap="round" />
+  </svg>
+);
+
 export const IconMenu = (p: P) => (
   <svg {...base(p)}>
     <path d="M4 7h16M4 12h16M4 17h16" />

@@ -94,12 +94,20 @@ export function formatAbsolute(iso: string | null | undefined): string {
   });
 }
 
-/** Short timestamp for log rows: "2026-09-10 19:29:03". */
-export function formatLogTime(iso: string): string {
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** "2026-09-15", the half of a log stamp that repeats down the page. */
+export function formatLogDate(iso: string): string {
   const d = parseDate(iso);
   if (!d) return iso;
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/** "11:38:37", the half that tells two log rows apart. */
+export function formatLogTimeOfDay(iso: string): string {
+  const d = parseDate(iso);
+  if (!d) return "";
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
 export function plural(n: number, singular: string, pluralForm?: string): string {
