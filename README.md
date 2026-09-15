@@ -55,8 +55,8 @@ stored), choose all games or selected games, pick platforms, pick content.
 | `MOCK_GOG` | `0` | `1` runs against a fake library with no GOG account; any text works as the login code. Use throwaway volumes. |
 | `DATA_DIR` / `LIBRARY_DIR` | `/data` / `/library` | Paths inside the container. Leave as is and mount volumes there. |
 
-The repository's own `docker-compose.yml` builds the image from source and reads these
-values from a `.env` file (`cp .env.example .env`).
+To build the image from source instead, run `make docker` and point `image:` at
+`gogl-watcher:latest`.
 
 ## Notes
 
@@ -78,7 +78,7 @@ go test ./...                              # backend tests
 cd web && npm install && npm run dev       # UI dev server on :5173, proxies /api to :8080
 make mock                                  # backend against a fake GOG library
 make build                                 # binary with the UI embedded
-make docker                                # same image the compose file builds
+make docker                                # local image tagged gogl-watcher:latest
 ```
 
 Releases: see [docs/releasing.md](docs/releasing.md).
