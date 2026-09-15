@@ -87,8 +87,8 @@ func TestPlanSelectsPlatformsAndLanguages(t *testing.T) {
 		t.Errorf("extras should be off, got %d", got)
 	}
 	for _, f := range files {
-		if f.RelDir != "windows" {
-			t.Errorf("rel dir = %q, want windows", f.RelDir)
+		if f.RelDir != "windows/en" {
+			t.Errorf("rel dir = %q, want windows/en", f.RelDir)
 		}
 		if f.Downlink == "" || f.GogID == "" || f.Size == 0 {
 			t.Errorf("incomplete file: %+v", f)
@@ -114,12 +114,13 @@ func TestPlanMultipleLanguagesAndExtras(t *testing.T) {
 			t.Errorf("extra rel dir = %q", f.RelDir)
 		}
 		// English and German installers share file names in the sample library (as
-		// they can on GOG): with several languages each gets its own folder.
+		// they can on GOG): every language gets its own folder, even where it is
+		// the only one.
 		if f.Kind == "installer" && f.OS == "windows" && f.RelDir != "windows/"+f.Language {
 			t.Errorf("windows/%s installer rel dir = %q, want per-language folder", f.Language, f.RelDir)
 		}
-		if f.Kind == "installer" && f.OS == "mac" && f.RelDir != "mac" {
-			t.Errorf("single-language mac installer rel dir = %q, want mac", f.RelDir)
+		if f.Kind == "installer" && f.OS == "mac" && f.RelDir != "mac/en" {
+			t.Errorf("single-language mac installer rel dir = %q, want mac/en", f.RelDir)
 		}
 	}
 	paths := map[string]string{}
@@ -156,12 +157,12 @@ func TestPlanDLCOwnership(t *testing.T) {
 	game := db.Game{ID: cp.ID, Title: cp.Title, Folder: "Cyberpunk 2077"}
 	dlcID := cp.ExpandedDLCs[0].ID
 
-	// DLC owned: planned in dlc/<folder>/windows.
+	// DLC owned: planned in dlc/<folder>/windows/<language>.
 	plan := Plan(game, &cp, gog.OwnedSet{cp.ID: true, dlcID: true}, settings([]string{"windows"}, []string{"en"}, true, true, false))
 	if len(plan) != 2 || !plan[1].Product.IsDLC {
 		t.Fatalf("expected base + dlc, got %d products", len(plan))
 	}
-	if plan[1].Files[0].RelDir != "dlc/Cyberpunk 2077 Phantom Liberty/windows" {
+	if plan[1].Files[0].RelDir != "dlc/Cyberpunk 2077 Phantom Liberty/windows/en" {
 		t.Errorf("dlc rel dir = %q", plan[1].Files[0].RelDir)
 	}
 	// DLC not owned: skipped.

@@ -501,3 +501,52 @@ func TestCompleteFileRefusesDroppedRow(t *testing.T) {
 		t.Errorf("row changed: %+v", got)
 	}
 }
+
+// The downloads page lists the queue in the order the downloader takes it,
+// with the files it passes over for now (retry delay, game not owned) last.
+func TestListQueuedFilesFollowsTheDownloadOrder(t *testing.T) {
+	d := openTest(t)
+	ctx := context.Background()
+	for id := int64(1); id <= 3; id++ {
+		if err := d.UpsertGame(ctx, Game{ID: id, Title: "Game", Folder: "Game"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.UpsertProduct(ctx, Product{ID: id, GameID: id, Title: "Game"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add := func(game int64, gogID string, size int64) int64 {
+		t.Helper()
+		f := File{GameID: game, ProductID: game, Kind: "installer", OS: "windows", Language: "en", GogID: gogID, Name: gogID, Version: "1", Size: size, Downlink: "x" + gogID, RelDir: "windows"}
+		res, err := d.UpsertDesiredFile(ctx, f, func(string) bool { return false })
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.ID
+	}
+	late := add(2, "late", 10)
+	big := add(1, "big", 500)
+	small := add(1, "small", 100)
+	waiting := add(1, "waiting", 50)
+	unowned := add(3, "unowned", 1)
+	if err := d.SetFileError(ctx, waiting, "boom", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.MarkGamesNotOwned(ctx, []int64{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.ListQueuedFiles(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int64{small, big, late, waiting, unowned}
+	ids := make([]int64, len(got))
+	for i, f := range got {
+		ids[i] = f.ID
+	}
+	for i := range want {
+		if i >= len(ids) || ids[i] != want[i] {
+			t.Fatalf("queue order = %v, want %v", ids, want)
+		}
+	}
+}

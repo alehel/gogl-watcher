@@ -1105,9 +1105,27 @@ func (d *DB) ListFilesByGame(ctx context.Context, gameID int64) ([]File, error) 
 	return d.queryFiles(ctx, `WHERE game_id = ? ORDER BY product_id, CASE kind WHEN 'installer' THEN 0 WHEN 'extra' THEN 1 ELSE 2 END, os, language, gog_id`, gameID)
 }
 
-// ListFilesByStatus returns files with the given status and active flag.
-func (d *DB) ListFilesByStatus(ctx context.Context, status string, active bool) ([]File, error) {
-	return d.queryFiles(ctx, `WHERE status = ? AND active = ? ORDER BY id`, status, b2i(active))
+// ListQueuedFiles returns the active pending files in the order the download
+// queue takes them (see NextPendingFiles); the files it would pass over for
+// now, waiting out a retry delay or belonging to a game no longer owned, last.
+func (d *DB) ListQueuedFiles(ctx context.Context) ([]File, error) {
+	return d.queryFiles(ctx, `WHERE status = 'pending' AND active = 1
+		ORDER BY (next_attempt_at > ? OR game_id NOT IN (SELECT id FROM games WHERE owned = 1)), game_id, size, id`, time.Now().UnixMilli())
+}
+
+// FileOwningPath returns a file other than id whose downloaded copy lives at
+// the library-relative path rel, or whose previous version waits there to be
+// replaced; nil when no other file claims the path. Rows that are inactive
+// count: their copy is kept on disk, which is the point of keeping them.
+func (d *DB) FileOwningPath(ctx context.Context, rel string, id int64) (*File, error) {
+	if rel == "" {
+		return nil, nil
+	}
+	fs, err := d.queryFiles(ctx, `WHERE id <> ? AND (local_path = ? OR previous_path = ?) ORDER BY id LIMIT 1`, id, rel, rel)
+	if err != nil || len(fs) == 0 {
+		return nil, err
+	}
+	return &fs[0], nil
 }
 
 // ListActiveFiles returns every active file.

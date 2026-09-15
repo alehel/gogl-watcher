@@ -529,6 +529,19 @@ func TestCrossSiteWritesAreRefused(t *testing.T) {
 	if code := do(nil); code != 200 {
 		t.Errorf("non-browser POST: %d, want 200", code)
 	}
+	// Behind a reverse proxy that rewrites Host (nginx without proxy_set_header
+	// Host) the browser's own verdict is what counts; a same-site request from
+	// another host still has to match.
+	if code := do(map[string]string{"Origin": "https://gogl.example.com", "Sec-Fetch-Site": "same-origin"}); code != 200 {
+		t.Errorf("same-origin POST through a Host-rewriting proxy: %d, want 200", code)
+	}
+	if code := do(map[string]string{"Origin": "https://gogl.example.com", "Sec-Fetch-Site": "same-site"}); code != 403 {
+		t.Errorf("same-site POST from another host: %d, want 403", code)
+	}
+	// An opaque origin (a sandboxed frame, a data: page) is not the UI.
+	if code := do(map[string]string{"Origin": "null"}); code != 403 {
+		t.Errorf("POST with a null origin: %d, want 403", code)
+	}
 	// GET is never blocked.
 	req, _ := http.NewRequest("GET", srv.URL+"/api/status", nil)
 	req.Header.Set("Origin", "https://evil.example")

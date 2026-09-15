@@ -186,7 +186,7 @@ pending, none active; `error` – at least one file failed; `complete` – every
       "status": "done",                // "pending" | "downloading" | "done" | "error" | "inactive"
       "progress": { "downloaded_bytes": 0, "speed_bps": 0 },   // only while downloading
       "error": null,
-      "local_path": "/library/The Witcher/windows/setup_the_witcher_1.5.exe",
+      "local_path": "/library/The Witcher/windows/en/setup_the_witcher_1.5.exe",
       "md5": null,
       "downloaded_at": null
     } ]

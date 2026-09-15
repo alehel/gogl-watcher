@@ -39,6 +39,9 @@ const (
 // errStalled marks a transfer that stopped delivering data.
 var errStalled = errors.New("transfer stalled")
 
+// errPathTaken marks a download whose destination is the copy of another file.
+var errPathTaken = errors.New("destination belongs to another file")
+
 // Progress is the live state of one transfer.
 type Progress struct {
 	FileID     int64
@@ -61,6 +64,7 @@ type transfer struct {
 	startedAt  time.Time
 	cancel     context.CancelFunc
 	done       chan struct{} // closed once the transfer goroutine has left
+	claim      string        // the destination this transfer holds in Manager.claimed
 }
 
 // progress snapshots the transfer. The caller must hold Manager.mu, which is
@@ -89,6 +93,7 @@ type Manager struct {
 
 	mu        sync.Mutex
 	active    map[int64]*transfer
+	claimed   map[string]int64 // destination -> file id, for the transfers in progress
 	maxActive int
 	paused    bool
 	enabled   bool // setup complete
@@ -100,7 +105,7 @@ func New(d *db.DB, g gog.API, paths library.Paths, log *slog.Logger) *Manager {
 	return &Manager{
 		db: d, gog: g, paths: paths, log: log.With("component", "download"),
 		limiter: rate.NewLimiter(rate.Inf, minBurst), wake: make(chan struct{}, 1),
-		active: map[int64]*transfer{}, maxActive: 2, StallTimeout: defaultStallTimeout,
+		active: map[int64]*transfer{}, claimed: map[string]int64{}, maxActive: 2, StallTimeout: defaultStallTimeout,
 	}
 }
 
@@ -276,6 +281,9 @@ func (m *Manager) startTransfer(parent context.Context, f db.File) {
 			cancel()
 			m.mu.Lock()
 			delete(m.active, f.ID)
+			if t.claim != "" {
+				delete(m.claimed, t.claim)
+			}
 			m.mu.Unlock()
 			close(t.done)
 			m.Wake()
@@ -305,7 +313,7 @@ func (m *Manager) fail(ctx context.Context, t *transfer, title string, err error
 		_ = m.db.DeferFile(ctx, t.file.ID, err.Error(), time.Minute)
 		return
 	}
-	permanent := false
+	permanent := errors.Is(err, errPathTaken)
 	var he *gog.HTTPError
 	if errors.As(err, &he) && (he.Status == 403 || he.Status == 404) {
 		permanent = true
@@ -370,6 +378,32 @@ func (t target) resolve(f db.File, game db.Game, dl *gog.Download, paths library
 	return t
 }
 
+// claimPath makes sure the destination is the transfer's own before anything
+// is written there. Two files can be planned onto one path (localized
+// installers share their file names, and so may two extras), and the second
+// must not write over the first: whatever is on disk belongs to the row that
+// put it there, kept or not. A row records its path once its transfer is
+// under way, so the transfers in progress are held apart in memory as well.
+// The sync keeps languages apart; this is the last line.
+func (m *Manager) claimPath(ctx context.Context, t *transfer, rel string) error {
+	m.mu.Lock()
+	if owner, taken := m.claimed[rel]; taken && owner != t.file.ID {
+		m.mu.Unlock()
+		return fmt.Errorf("%w: %s is being downloaded for another file", errPathTaken, rel)
+	}
+	m.claimed[rel] = t.file.ID
+	t.claim = rel
+	m.mu.Unlock()
+	other, err := m.db.FileOwningPath(ctx, rel, t.file.ID)
+	if err != nil {
+		return err
+	}
+	if other != nil {
+		return fmt.Errorf("%w: %s is the copy of %q (%s)", errPathTaken, rel, other.Name, cmp.Or(other.Language, other.Kind))
+	}
+	return nil
+}
+
 // finished reports whether the complete file is already on disk and is really
 // this one, which is what a database reset or an interrupted rename leaves behind.
 func (t target) finished() bool {
@@ -402,6 +436,10 @@ func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error
 		return fmt.Errorf("opening download: %w", err)
 	}
 	tgt = tgt.resolve(f, game, dl, m.paths)
+	if err := m.claimPath(ctx, t, tgt.rel); err != nil {
+		dl.Body.Close()
+		return err
+	}
 	if f.LocalPath != "" && f.LocalPath != tgt.rel {
 		// The file used to be planned elsewhere (language folder, renamed DLC);
 		// a partial left there would never be picked up again.
@@ -508,6 +546,9 @@ func (m *Manager) downloadSave(ctx context.Context, t *transfer, game db.Game) e
 	tgt.rel = library.LocalRelPath(game.Folder, f.RelDir, tgt.name)
 	tgt.abs = m.paths.Abs(tgt.rel)
 	tgt.part = tgt.abs + ".part"
+	if err := m.claimPath(ctx, t, tgt.rel); err != nil {
+		return err
+	}
 	if f.LocalPath != "" && f.LocalPath != tgt.rel {
 		m.paths.RemovePart(f.LocalPath)
 	}

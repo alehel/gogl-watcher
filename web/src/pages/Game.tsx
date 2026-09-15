@@ -328,6 +328,12 @@ function OfferRow({ item: it }: { item: OfferItem }) {
 function ProductSection({ product, onChanged }: { product: Product; onChanged: () => void }) {
   const done = product.files.filter((f) => f.status === "done").length;
   const active = product.files.filter((f) => f.status !== "inactive").length;
+  const inactive = product.files.length - active;
+  // Files kept from before are listed but not wanted; a product that only has
+  // those must not read as "0 of 0 files" above a table full of them.
+  let count = `${done} of ${active} files`;
+  if (active === 0 && inactive > 0) count = plural(inactive, "inactive file");
+  else if (inactive > 0) count += ` · ${inactive} inactive`;
   return (
     <section className="section product">
       <div className="section-head">
@@ -335,9 +341,7 @@ function ProductSection({ product, onChanged }: { product: Product; onChanged: (
           {product.title}
           {product.is_dlc && <span className="dlc">DLC</span>}
         </h2>
-        <span className="meta num">
-          {done} of {active} files
-        </span>
+        <span className="meta num">{count}</span>
       </div>
       {product.files.length === 0 ? (
         <EmptyState>Nothing matches the chosen platforms and languages.</EmptyState>

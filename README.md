@@ -5,7 +5,7 @@ optionally DLC, extras and cloud saves) of every game you own or only the games 
 re-checks GOG on a schedule so new games and updated installers are fetched automatically,
 and serves a web UI to manage it all.
 
-- One folder per game under `/library`: `<Game>/<os>/…`, `<Game>/dlc/…`, `<Game>/extras/…`,
+- One folder per game under `/library`: `<Game>/<os>/<language>/…`, `<Game>/dlc/…`, `<Game>/extras/…`,
   `<Game>/saves/…`.
 - Updated installers replace the old file only after the new download has verified (MD5
   against GOG's checksum). Resumable downloads, parallel transfers, global speed limit.
