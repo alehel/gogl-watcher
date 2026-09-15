@@ -341,10 +341,12 @@ function ContentStep({
   const [dlc, setDlc] = useState<boolean | null>(chosen ? settings.include_dlc : null);
   const [extras, setExtras] = useState<boolean | null>(chosen ? settings.include_extras : null);
   const [saves, setSaves] = useState<boolean | null>(chosen ? settings.include_saves : null);
+  // DESIGN MOCK: artwork is not a setting the backend knows yet; the answer is not saved.
+  const [artwork, setArtwork] = useState<boolean | null>(chosen ? false : null);
   const [langs, setLangs] = useState<string[]>(settings.languages.length ? settings.languages : ["en"]);
   const [fallback, setFallback] = useState(settings.language_fallback);
 
-  const valid = dlc !== null && extras !== null && saves !== null && langs.length > 0;
+  const valid = dlc !== null && extras !== null && saves !== null && artwork !== null && langs.length > 0;
   const save = useStepSave(
     () =>
       putSettings(
@@ -395,6 +397,14 @@ function ContentStep({
         hint="A copy of the save games GOG Galaxy keeps in the cloud, for the games that have any."
         value={saves}
         onChange={setSaves}
+        disabled={save.busy}
+      />
+      <YesNo
+        name="artwork"
+        label="Include artwork"
+        hint="The cover, background, logo, icon and screenshots GOG shows for each game, at full size. For printing your own covers, labels and inlays."
+        value={artwork}
+        onChange={setArtwork}
         disabled={save.busy}
       />
       <div className="field">

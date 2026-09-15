@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ApiError,
@@ -27,6 +28,8 @@ import { TagList } from "./Library";
 import { formatBytes, formatRelative, formatSpeed, platformLabel, platformsText, plural, ratio } from "../format";
 import { IconCheck } from "../components/Icons";
 import { useNow, usePolling, type PollingState } from "../hooks";
+import { ArtworkSection } from "../components/ArtworkSection";
+import { mockArtworkOffer } from "../mock/artwork";
 
 export function GamePage() {
   const { id = "" } = useParams();
@@ -52,6 +55,9 @@ export function GamePage() {
   const canOptDLC = status ? !status.library.include_dlc : false;
   const canOptExtras = status ? !status.library.include_extras : false;
   const canOptSaves = status ? !status.library.include_saves : false;
+  // DESIGN MOCK: artwork is not a setting yet, so the opt-in is always offered and only lives on this page.
+  const canOptArtwork = true;
+  const [artworkOpt, setArtworkOpt] = useState(false);
   const gameOptions = (g: GameSummary): GameOptionsValue => ({
     include_installers: g.include_installers,
     include_dlc: g.include_dlc,
@@ -159,7 +165,7 @@ export function GamePage() {
         </div>
       </div>
 
-      {(canOptInstallers || canOptDLC || canOptExtras || canOptSaves) && (
+      {(canOptInstallers || canOptDLC || canOptExtras || canOptSaves || canOptArtwork) && (
         <div className="check-list game-options" role="group" aria-label="Extra content for this game">
           {canOptInstallers && (
             <label className="check">
@@ -221,6 +227,23 @@ export function GamePage() {
               </span>
             </label>
           )}
+          {canOptArtwork && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={artworkOpt}
+                disabled={options.busy}
+                onChange={(e) => setArtworkOpt(e.target.checked)}
+              />
+              <span>
+                Also download artwork for this game
+                <span className="desc">
+                  The library settings leave artwork out; this game's cover, background, logo, icon and screenshots are
+                  fetched anyway.
+                </span>
+              </span>
+            </label>
+          )}
         </div>
       )}
 
@@ -230,7 +253,7 @@ export function GamePage() {
             This game is not selected for download. Select it to fetch its installers
             {hasFiles ? "; files kept from before are listed below as inactive." : "."}
           </EmptyState>
-          <OfferSection offer={offer} />
+          <OfferSection offer={offer} game={g} />
         </>
       )}
       {/* An unselected game with nothing on disk has said all there is to say above. */}
@@ -244,16 +267,24 @@ export function GamePage() {
         ) : (
           sorted.map((p) => <ProductSection key={p.id} product={p} onChanged={game.refresh} />)
         ))}
+      {!unselected && g.status !== "unsynced" && <ArtworkSection game={g} />}
     </div>
   );
 }
 
 /** What GOG offers for a game that is not selected, with what the settings would pick marked. */
-function OfferSection({ offer }: { offer: PollingState<Offer> }) {
+function OfferSection({ offer, game }: { offer: PollingState<Offer>; game: GameSummary }) {
   if (offer.loading && !offer.data) return <Loading text="Asking GOG what is available…" />;
   if (!offer.data) return <ApiErrorNotice error={offer.error} />;
-  const { products, wanted_files, wanted_bytes } = offer.data;
-  const sorted = [...products].sort((a, b) => Number(a.is_dlc) - Number(b.is_dlc) || a.title.localeCompare(b.title));
+  const { products } = offer.data;
+  // DESIGN MOCK: the artwork rows are made up here, so they are added to the
+  // base game's items and to the totals here too.
+  const artwork = mockArtworkOffer(game);
+  const wanted_files = offer.data.wanted_files + artwork.reduce((n, it) => n + it.files, 0);
+  const wanted_bytes = offer.data.wanted_bytes + artwork.reduce((n, it) => n + it.size, 0);
+  const sorted = [...products]
+    .sort((a, b) => Number(a.is_dlc) - Number(b.is_dlc) || a.title.localeCompare(b.title))
+    .map((p) => (p.is_dlc ? p : { ...p, items: [...p.items, ...artwork] }));
   return (
     <>
       <div className="muted">
@@ -309,9 +340,10 @@ function OfferProductSection({ product }: { product: OfferProduct }) {
 }
 
 function OfferRow({ item: it }: { item: OfferItem }) {
+  const kind = it.kind === "installer" ? "Installer" : it.kind === "artwork" ? "Artwork" : "Extra";
   return (
     <tr className={it.wanted ? "" : "dim"}>
-      <td>{it.kind === "installer" ? "Installer" : it.type ? `Extra · ${it.type}` : "Extra"}</td>
+      <td>{it.type ? `${kind} · ${it.type}` : kind}</td>
       <td>{it.os ? platformLabel(it.os) : "—"}</td>
       <td className="mono">{it.language || "—"}</td>
       <td className="clip" title={it.name}>
@@ -372,7 +404,12 @@ function ProductSection({ product, onChanged }: { product: Product; onChanged: (
   );
 }
 
-const FILE_KIND_LABELS: Record<string, string> = { installer: "Installer", extra: "Extra", save: "Cloud save" };
+const FILE_KIND_LABELS: Record<string, string> = {
+  installer: "Installer",
+  extra: "Extra",
+  save: "Cloud save",
+  artwork: "Artwork",
+};
 
 function FileRow({ file: f, onChanged }: { file: GameFile; onChanged: () => void }) {
   const retry = useToastAction(() => retryFile(f.id), { success: "File queued again", onDone: onChanged });

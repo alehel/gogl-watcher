@@ -726,6 +726,41 @@ input[type="radio"] {
 .game-info > .tags { display: flex; margin: 0; }
 .product .section-title .dlc { font-size: 11px; color: var(--text-3); margin-left: 6px; }
 
+/* ---- artwork (design mock): a gallery of the game's images, each with the
+   state a file row shows. Every preview box has the same shape, so the rows
+   line up whatever the image's own proportions; PNGs sit on a checkerboard
+   so their transparency can be seen. */
+.art-grid { display: grid; gap: 16px 12px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.art { margin: 0; min-width: 0; }
+.art-preview {
+  aspect-ratio: 3 / 2;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+}
+.art-preview.checker {
+  background: repeating-conic-gradient(var(--border) 0 25%, var(--surface) 0 50%) 0 0 / 16px 16px;
+}
+.art-preview img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.art-preview .bar { position: absolute; left: 0; right: 0; bottom: 0; }
+.art figcaption {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.art-title { font-size: 13px; color: var(--text); }
+.art-file { color: var(--text-3); font-size: 11px; }
+.art-status { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+
 /* ---- logs */ .log-list { font-family: var(--mono); font-size: 12px; border-top: 1px solid var(--border); }
 .log-row {
   display: grid;
@@ -856,4 +891,5 @@ input[type="radio"] {
   .modal-foot { justify-content: stretch; }
   .modal-foot .btn { flex: 1; }
   .table td.clip { max-width: 180px; }
+  .art-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
 }

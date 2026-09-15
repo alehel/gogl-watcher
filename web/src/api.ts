@@ -18,7 +18,8 @@ export type GameStatus =
   | "unsynced"
   | "unselected";
 export type FileStatus = "pending" | "downloading" | "done" | "error" | "inactive";
-export type FileKind = "installer" | "extra" | "save";
+// "artwork" is a DESIGN MOCK: the backend does not send it yet.
+export type FileKind = "installer" | "extra" | "save" | "artwork";
 export type LogLevel = "debug" | "info" | "warn" | "error";
 export type GameSort = "title" | "status" | "updated";
 export type OnRemoved = "keep" | "delete" | null;
