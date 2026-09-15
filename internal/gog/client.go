@@ -71,10 +71,13 @@ type Client struct {
 	userAgent string
 	limiter   *rate.Limiter
 
-	mu        sync.Mutex // guards token
-	token     Token
-	session   uint64
-	persistMu sync.Mutex // serializes store writes with logout
+	mu      sync.Mutex // guards token and gameTokens
+	token   Token
+	session uint64
+	// gameTokens caches the tokens issued for games' own clients (see cloud.go),
+	// keyed by client id.
+	gameTokens map[string]gameToken
+	persistMu  sync.Mutex // serializes store writes with logout
 	// refreshMu serialises token refreshes. It is never held together with mu
 	// across a network call, so readers of the token state are not blocked while
 	// GOG is slow to answer.
@@ -164,6 +167,7 @@ func (c *Client) ExchangeCode(ctx context.Context, input string) (*User, error) 
 	c.mu.Lock()
 	c.token = t
 	c.session++
+	c.gameTokens = nil
 	session := c.session
 	c.mu.Unlock()
 	// GOG has consumed the one-time code by now, and every refresh from here on
@@ -290,6 +294,7 @@ func (c *Client) Logout(ctx context.Context) error {
 	c.mu.Lock()
 	c.token = Token{}
 	c.session++
+	c.gameTokens = nil
 	c.mu.Unlock()
 	return c.store.Clear(ctx)
 }

@@ -49,6 +49,30 @@ func TestSettingsRoundTripAndNormalize(t *testing.T) {
 	}
 }
 
+// Settings stored before a setting existed leave it out; such an installation
+// keeps behaving as it did, which for the base game installers means fetching them.
+func TestSettingsAddedLaterKeepTheOldBehaviour(t *testing.T) {
+	d := openTest(t)
+	ctx := context.Background()
+	if err := d.SetKV(ctx, "settings", `{"download_mode":"all","platforms":["windows"],"languages":["en"],"include_dlc":true,"max_concurrent_downloads":2,"check_interval_hours":6}`); err != nil {
+		t.Fatal(err)
+	}
+	s, err := d.GetSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.IncludeInstallers || s.IncludeSaves {
+		t.Errorf("old settings should keep downloading installers and nothing new: %+v", s)
+	}
+	s.IncludeInstallers = false
+	if err := d.SaveSettings(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := d.GetSettings(ctx); got.IncludeInstallers {
+		t.Error("switching installers off did not stick")
+	}
+}
+
 func TestFileLifecycle(t *testing.T) {
 	d := openTest(t)
 	ctx := context.Background()

@@ -7,6 +7,7 @@ import {
   retryGame,
   syncGame,
   type GameFile,
+  type GameSummary,
   type Offer,
   type OfferItem,
   type OfferProduct,
@@ -17,7 +18,7 @@ import { ApiErrorNotice, CoverImage, EmptyState, Loading, Spinner, TimeAgo } fro
 import { DataTable } from "../components/DataTable";
 import { IconBack } from "../components/Icons";
 import { ProgressBar } from "../components/ProgressBar";
-import { useGameOptions } from "../components/GameOptions";
+import { useGameOptions, type GameOptionsValue } from "../components/GameOptions";
 import { useGameSelection } from "../components/Selection";
 import { FileStatusDot, GameStatusDot, gameStatusTone } from "../components/StatusDot";
 import { useStatus } from "../components/StatusContext";
@@ -47,8 +48,16 @@ export function GamePage() {
   const selectedOnly = selectsGames(status?.library.download_mode);
   const options = useGameOptions(id, game.refresh);
   // A game can opt in to what the library-wide settings leave out.
+  const canOptInstallers = status ? !status.library.include_installers : false;
   const canOptDLC = status ? !status.library.include_dlc : false;
   const canOptExtras = status ? !status.library.include_extras : false;
+  const canOptSaves = status ? !status.library.include_saves : false;
+  const gameOptions = (g: GameSummary): GameOptionsValue => ({
+    include_installers: g.include_installers,
+    include_dlc: g.include_dlc,
+    include_extras: g.include_extras,
+    include_saves: g.include_saves,
+  });
 
   const back = (
     <Link to="/library" className="back">
@@ -150,17 +159,31 @@ export function GamePage() {
         </div>
       </div>
 
-      {(canOptDLC || canOptExtras) && (
+      {(canOptInstallers || canOptDLC || canOptExtras || canOptSaves) && (
         <div className="check-list game-options" role="group" aria-label="Extra content for this game">
+          {canOptInstallers && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={g.include_installers}
+                disabled={options.busy}
+                onChange={(e) => void options.setOptions({ ...gameOptions(g), include_installers: e.target.checked })}
+              />
+              <span>
+                Also download the base game installers for this game
+                <span className="desc">
+                  The library settings leave the games themselves out; this one is fetched anyway.
+                </span>
+              </span>
+            </label>
+          )}
           {canOptDLC && (
             <label className="check">
               <input
                 type="checkbox"
                 checked={g.include_dlc}
                 disabled={options.busy}
-                onChange={(e) =>
-                  void options.setOptions({ include_dlc: e.target.checked, include_extras: g.include_extras })
-                }
+                onChange={(e) => void options.setOptions({ ...gameOptions(g), include_dlc: e.target.checked })}
               />
               <span>
                 Also download DLC for this game
@@ -174,13 +197,27 @@ export function GamePage() {
                 type="checkbox"
                 checked={g.include_extras}
                 disabled={options.busy}
-                onChange={(e) =>
-                  void options.setOptions({ include_dlc: g.include_dlc, include_extras: e.target.checked })
-                }
+                onChange={(e) => void options.setOptions({ ...gameOptions(g), include_extras: e.target.checked })}
               />
               <span>
                 Also download extras for this game
                 <span className="desc">Soundtracks, manuals, wallpapers and the like, for this game only.</span>
+              </span>
+            </label>
+          )}
+          {canOptSaves && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={g.include_saves}
+                disabled={options.busy}
+                onChange={(e) => void options.setOptions({ ...gameOptions(g), include_saves: e.target.checked })}
+              />
+              <span>
+                Also back up cloud saves for this game
+                <span className="desc">
+                  The save games GOG Galaxy keeps in the cloud, if this game has any, for this game only.
+                </span>
               </span>
             </label>
           )}
@@ -331,6 +368,8 @@ function ProductSection({ product, onChanged }: { product: Product; onChanged: (
   );
 }
 
+const FILE_KIND_LABELS: Record<string, string> = { installer: "Installer", extra: "Extra", save: "Cloud save" };
+
 function FileRow({ file: f, onChanged }: { file: GameFile; onChanged: () => void }) {
   const retry = useToastAction(() => retryFile(f.id), { success: "File queued again", onDone: onChanged });
   const downloading = f.status === "downloading";
@@ -338,7 +377,7 @@ function FileRow({ file: f, onChanged }: { file: GameFile; onChanged: () => void
   const dl = f.progress?.downloaded_bytes ?? 0;
   return (
     <tr className={isError ? "error" : f.status === "inactive" ? "dim" : ""}>
-      <td>{f.kind === "installer" ? "Installer" : "Extra"}</td>
+      <td>{FILE_KIND_LABELS[f.kind] ?? f.kind}</td>
       <td>{platformLabel(f.os)}</td>
       <td className="mono">{f.language || "—"}</td>
       <td className="clip" title={f.name}>

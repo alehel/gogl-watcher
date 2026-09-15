@@ -336,19 +336,24 @@ function ContentStep({
   onBack: () => void;
 }) {
   const chosen = settings.content_chosen;
+  // The base game is what a backup is for, so it starts as yes; the rest are asked.
+  const [installers, setInstallers] = useState<boolean>(chosen ? settings.include_installers : true);
   const [dlc, setDlc] = useState<boolean | null>(chosen ? settings.include_dlc : null);
   const [extras, setExtras] = useState<boolean | null>(chosen ? settings.include_extras : null);
+  const [saves, setSaves] = useState<boolean | null>(chosen ? settings.include_saves : null);
   const [langs, setLangs] = useState<string[]>(settings.languages.length ? settings.languages : ["en"]);
   const [fallback, setFallback] = useState(settings.language_fallback);
 
-  const valid = dlc !== null && extras !== null && langs.length > 0;
+  const valid = dlc !== null && extras !== null && saves !== null && langs.length > 0;
   const save = useStepSave(
     () =>
       putSettings(
         {
           ...settings,
+          include_installers: installers,
           include_dlc: dlc ?? false,
           include_extras: extras ?? false,
+          include_saves: saves ?? false,
           languages: langs,
           language_fallback: fallback,
           content_chosen: true,
@@ -359,12 +364,15 @@ function ContentStep({
   );
 
   return (
-    <StepFrame
-      title="What should be downloaded besides the base game?"
-      save={save}
-      onBack={onBack}
-      nextDisabled={!valid}
-    >
+    <StepFrame title="What should be downloaded?" save={save} onBack={onBack} nextDisabled={!valid}>
+      <YesNo
+        name="installers"
+        label="Include base game installers"
+        hint="The offline installers of the games themselves. Say no to keep only DLC, extras or cloud saves."
+        value={installers}
+        onChange={setInstallers}
+        disabled={save.busy}
+      />
       <YesNo
         name="dlc"
         label="Include DLC"
@@ -379,6 +387,14 @@ function ContentStep({
         hint="Soundtracks, manuals, wallpapers, artbooks and other bonus content."
         value={extras}
         onChange={setExtras}
+        disabled={save.busy}
+      />
+      <YesNo
+        name="saves"
+        label="Include cloud saves"
+        hint="A copy of the save games GOG Galaxy keeps in the cloud, for the games that have any."
+        value={saves}
+        onChange={setSaves}
         disabled={save.busy}
       />
       <div className="field">
@@ -454,17 +470,21 @@ function FinishStep({
           {langNames || <span className="err-text">none chosen</span>}
           {settings.language_fallback && <span className="muted">&nbsp;(with fallback)</span>}
         </dd>
+        <dt>Base game installers</dt>
+        <dd>{settings.include_installers ? "Included" : "Not included"}</dd>
         <dt>DLC</dt>
         <dd>{settings.include_dlc ? "Included" : "Not included"}</dd>
         <dt>Extras</dt>
         <dd>{settings.include_extras ? "Included" : "Not included"}</dd>
+        <dt>Cloud saves</dt>
+        <dd>{settings.include_saves ? "Included" : "Not included"}</dd>
         <dt>Check interval</dt>
         <dd>every {settings.check_interval_hours} h</dd>
       </dl>
       <p className="muted small">
         {selectsGames(settings.download_mode)
           ? "Starting will fetch your game list right away. Nothing is downloaded until you select games in the library."
-          : "Starting will run the first library sync right away and begin downloading installers into the library folder."}
+          : "Starting will run the first library sync right away and begin downloading into the library folder."}
       </p>
     </StepFrame>
   );

@@ -22,7 +22,7 @@ func Plan(game db.Game, p *gog.Product, owned gog.OwnedSet, s db.Settings) []Pla
 	s = s.ForGame(game)
 	var out []PlannedProduct
 	base := PlannedProduct{Product: db.Product{ID: p.ID, GameID: game.ID, Title: cmp.Or(p.Title, game.Title), IsDLC: false}}
-	base.Files = planFiles(game.ID, p.ID, p.Downloads, "", s)
+	base.Files = planFiles(game.ID, p.ID, p.Downloads, "", s, s.IncludeInstallers)
 	out = append(out, base)
 	if !s.IncludeDLC {
 		return out
@@ -40,18 +40,25 @@ func Plan(game db.Game, p *gog.Product, owned gog.OwnedSet, s db.Settings) []Pla
 		}
 		usedFolders[folder] = true
 		pp := PlannedProduct{Product: db.Product{ID: d.ID, GameID: game.ID, Title: d.Title, IsDLC: true, Folder: folder}}
-		pp.Files = planFiles(game.ID, d.ID, d.Downloads, folder, s)
+		// The DLC setting covers the DLC's installers; the base game's own
+		// installers are a choice of their own.
+		pp.Files = planFiles(game.ID, d.ID, d.Downloads, folder, s, true)
 		out = append(out, pp)
 	}
 	return out
 }
 
-func planFiles(gameID, productID int64, dl gog.Downloads, dlcFolder string, s db.Settings) []db.File {
+// planFiles plans the files of one product: its installers when installers
+// says so, and its extras when the settings do.
+func planFiles(gameID, productID int64, dl gog.Downloads, dlcFolder string, s db.Settings, installers bool) []db.File {
 	var files []db.File
 	byOS := map[string][]gog.Installer{}
 	for _, inst := range dl.Installers {
 		os := db.NormalizePlatform(inst.OS)
 		byOS[os] = append(byOS[os], inst)
+	}
+	if !installers {
+		byOS = nil
 	}
 	for _, os := range s.Platforms {
 		chosen := chooseLanguages(byOS[os], s)

@@ -10,11 +10,16 @@ limit bandwidth and concurrency.
 ## Features
 
 - **Full or selected library** – download every game you own, or only the games you tick in
-  the library (nothing is selected until you do). Installers (Windows / macOS / Linux, your
-  choice), owned DLC and optionally extras (soundtracks, manuals, artbooks…) are organised as
+  the library (nothing is selected until you do). Each kind of content is a choice of its own:
+  the base game installers (Windows / macOS / Linux, your choice), owned DLC, extras
+  (soundtracks, manuals, artbooks…) and cloud saves, so a backup of only the extras or only
+  the saves is possible too. They are organised as
   `library/<Game>/<os>/…`, `library/<Game>/dlc/<DLC>/<os>/…` and `library/<Game>/extras/…`
   (when installers in several languages are wanted, each language gets its own
   `library/<Game>/<os>/<lang>/…` folder, since their file names are often identical).
+- **Cloud saves** – optionally, a copy of the save games GOG Galaxy keeps in the cloud, for
+  the games that have any, in `library/<Game>/saves/…`. A save that is rewritten in the cloud
+  is fetched again; the newest version is kept.
 - **Automatic updates** – a scheduler re-checks GOG every *N* hours; new versions replace the
   old installer once the new download has completed and verified. A change is confirmed
   against GOG's published checksum before a downloaded file is fetched again, and the
@@ -28,7 +33,7 @@ limit bandwidth and concurrency.
   settings.
 - **Three download modes** – every game you own, only games you tick in the library, or the
   ticked games plus every game you buy from now on (selected as soon as it shows up).
-- **Safe settings changes** – removing a platform (or DLC/extras), deselecting a game or switching
+- **Safe settings changes** – removing a platform (or DLC/extras/cloud saves), deselecting a game or switching
   to "selected games only" asks whether to keep or delete the files already on disk.
 - **Single static binary** – Go backend with the React UI embedded, SQLite for state, no cron
   daemon or external services.
@@ -51,15 +56,18 @@ Open <http://localhost:8080>. On first start the setup wizard walks you through:
    no game is selected to begin with: tick games in the library afterwards and their installers
    are fetched right away. Large libraries usually want this.
 3. **Platforms** – pick which installer platforms you want (at least one).
-4. **Content** – choose whether to include DLC and extras, and which installer languages.
+4. **Content** – choose whether to include the base game installers, DLC, extras and cloud
+   saves, and which installer languages. A platform is only required while installers or DLC
+   are included.
 
 The first library sync starts immediately afterwards and downloads begin (for selected games
 only, in that mode).
 
 ### Configuration
 
-Everything about *what* to download (download mode, platforms, languages, DLC/extras,
-concurrency, speed limit, check interval, pause) is configured in the web UI under **Settings**
+Everything about *what* to download (download mode, platforms, languages, base game
+installers/DLC/extras/cloud saves, concurrency, speed limit, check interval, pause) is
+configured in the web UI under **Settings**
 and stored in the database; installations set up before the download mode existed keep
 downloading everything. The environment only controls *where* and *how* the process runs:
 
@@ -154,7 +162,8 @@ Traefik with forward auth) before exposing it beyond your LAN.
 - **Sync** (`internal/library`): fetches the owned product ids and the account game list, then
   each game's download manifest from `api.gog.com` (in "selected games only" mode, only for
   selected games; the rest are just listed). For every game it plans the wanted files
-  from your settings (platforms, languages with optional fallback, DLC, extras) and reconciles
+  from your settings (base game installers, platforms, languages with optional fallback, DLC,
+  extras) and reconciles
   them with the database: new files become *pending*, files that really changed become
   *pending* again (the old file is deleted after the new one succeeds), files that are no
   longer offered are marked *inactive*.
@@ -170,6 +179,19 @@ Traefik with forward auth) before exposing it beyond your LAN.
   silent replacement is found even for the Linux builds and extras Galaxy never covers. A copy
   whose checksum still matches is kept, however much its version string moved — which is what
   keeps a bumped version from costing a 60 GB re-download.
+- **Cloud saves** (`internal/library/saves.go`, `internal/gog/cloud.go`): GOG keeps a game's
+  cloud saves in an object store container named by the OAuth client of the game's Galaxy
+  build, whose credentials are published in the build manifest (`content-system.gog.com`); a
+  game without a Galaxy build has no cloud storage. With cloud saves switched on (for the
+  library, or for one game on its page), the sync reads that client once per game and
+  remembers it, lists the container (`cloudstorage.gog.com`) with a token issued for the game's
+  client, and plans one file per object under `library/<Game>/saves/…`, with the store's hash
+  of the object as its version. The downloader fetches them through the same queue as
+  installers, checks the stored form against the store's checksum, decompresses it (Galaxy
+  uploads saves gzip-compressed) and stamps the file with the time the save was written. A save
+  that was rewritten in the cloud is fetched again; only the newest version is kept, as with
+  installers. A save that vanished from the cloud is no longer tracked, but a downloaded copy
+  stays on disk.
 - **Downloader** (`internal/downloader`): a worker pool fills up to *N* parallel transfers from
   the pending queue, resolving GOG's time-limited CDN links at download time. A shared token
   bucket enforces the speed limit. Transfers write to `<file>.part`, resume with HTTP ranges,
@@ -220,8 +242,11 @@ A tag containing a hyphen (`v1.3.0-rc.1`) is published as a pre-release.
   desktop client, like other community tools (lgogdownloader, Heroic's gogdl). If GOG changes
   those endpoints the sync will fail until the app is updated; failures are visible in the
   dashboard and the logs.
-- Only offline installers, DLC and extras are handled; Galaxy-only "depot" builds and patches
-  are not downloaded.
+- Only offline installers, DLC, extras and cloud saves are handled; Galaxy-only "depot" builds
+  and patches are not downloaded.
+- Cloud saves are a mirror of what the cloud holds now, one version per file. They are never
+  uploaded or deleted in the cloud, and nothing is restored into a game automatically: to put a
+  backed-up save back, copy it into the game's save folder yourself.
 - Removing a game from your GOG account does not delete its folder; it is simply no longer
   shown as owned.
 

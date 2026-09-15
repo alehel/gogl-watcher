@@ -39,6 +39,34 @@ func countKind(files []db.File, kind, os, lang string) int {
 	return n
 }
 
+// The base game's installers are a choice of their own: without them the plan
+// still holds the DLC's installers and the extras the settings ask for.
+func TestPlanWithoutBaseGameInstallers(t *testing.T) {
+	game, p, owned := witcher()
+	p.ExpandedDLCs = []gog.Product{gog.SampleLibrary()[3].Product.ExpandedDLCs[0]}
+	owned[p.ExpandedDLCs[0].ID] = true
+	s := settings([]string{"windows"}, []string{"en"}, true, true, true)
+	s.IncludeInstallers = false
+	plan := Plan(game, p, owned, s)
+	if len(plan) != 2 {
+		t.Fatalf("expected the base product and one DLC, got %d", len(plan))
+	}
+	if got := countKind(plan[0].Files, "installer", "", ""); got != 0 {
+		t.Errorf("base game installers planned although switched off: %d", got)
+	}
+	if got := countKind(plan[0].Files, "extra", "", ""); got == 0 {
+		t.Error("extras should still be planned")
+	}
+	if got := countKind(plan[1].Files, "installer", "windows", "en"); got == 0 {
+		t.Error("the DLC's installers should still be planned")
+	}
+	// The game itself can opt back in.
+	game.Options.Installers = true
+	if got := countKind(Plan(game, p, owned, s)[0].Files, "installer", "windows", "en"); got != 3 {
+		t.Errorf("an opted-in game should get its installers, got %d", got)
+	}
+}
+
 func TestPlanSelectsPlatformsAndLanguages(t *testing.T) {
 	game, p, owned := witcher()
 	plan := Plan(game, p, owned, settings([]string{"windows"}, []string{"en"}, true, true, false))

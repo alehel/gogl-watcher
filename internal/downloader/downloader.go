@@ -382,6 +382,9 @@ func (t target) finished() bool {
 
 func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error {
 	f := t.file
+	if f.Kind == db.KindSave {
+		return m.downloadSave(ctx, t, game)
+	}
 	link, tgt, err := m.remote(ctx, f)
 	if err != nil {
 		return err
@@ -479,6 +482,89 @@ func (m *Manager) download(ctx context.Context, t *transfer, game db.Game) error
 		return err
 	}
 	m.log.Info("download complete", "game", game.Title, "file", tgt.name, "size", total)
+	return nil
+}
+
+// downloadSave fetches one cloud save. Saves are small and change often, so
+// there is no resuming and no "already on disk" shortcut: the stored hash that
+// the sync recorded as the file's version is what says whether the copy on
+// disk is current, and a row that is pending is one whose copy is not. The
+// GOG client checks the stored form against the store's checksum and hands
+// over the decompressed file; what arrives is what the game wrote.
+func (m *Manager) downloadSave(ctx context.Context, t *transfer, game db.Game) error {
+	f := t.file
+	clientID, name, ok := library.ParseSaveDownlink(f.Downlink)
+	if !ok {
+		return fmt.Errorf("not a cloud save link: %s", f.Downlink)
+	}
+	client, err := m.db.FindGameClient(ctx, f.GameID, clientID)
+	if err != nil {
+		return err
+	}
+	if client == nil {
+		return fmt.Errorf("the game's Galaxy client %s is not known; sync the game again", clientID)
+	}
+	tgt := target{name: library.SaveFilename(name), size: f.Size}
+	tgt.rel = library.LocalRelPath(game.Folder, f.RelDir, tgt.name)
+	tgt.abs = m.paths.Abs(tgt.rel)
+	tgt.part = tgt.abs + ".part"
+	if f.LocalPath != "" && f.LocalPath != tgt.rel {
+		m.paths.RemovePart(f.LocalPath)
+	}
+	m.mu.Lock()
+	t.filename = tgt.name
+	m.mu.Unlock()
+	if err := m.db.SetFileResolved(ctx, f.ID, tgt.name, tgt.rel, "", 0); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(tgt.abs), 0o755); err != nil {
+		return err
+	}
+	dlCtx, abort := context.WithCancelCause(ctx)
+	defer abort(nil)
+	dl, err := m.gog.OpenCloudSave(dlCtx, gog.GameClient{ID: client.ClientID, Secret: client.ClientSecret}, name)
+	if err != nil {
+		return fmt.Errorf("opening cloud save: %w", err)
+	}
+	defer dl.Body.Close()
+	if err := m.checkSpace(tgt.abs, tgt.size); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(tgt.part, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	m.log.Info("downloading cloud save", "game", game.Title, "file", name)
+	t.downloaded.Store(0)
+	stopSpeed := m.trackSpeed(ctx, t)
+	written, err := m.copy(ctx, dlCtx, abort, out, dl.Body, nil, t)
+	stopSpeed()
+	if err == nil {
+		err = out.Sync()
+	}
+	if cerr := out.Close(); err == nil && cerr != nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(tgt.part)
+		return err
+	}
+	t.size.Store(written)
+	if err := os.Rename(tgt.part, tgt.abs); err != nil {
+		return err
+	}
+	if !dl.ModTime.IsZero() {
+		// The copy carries the time the save was written, as the game would see it.
+		_ = os.Chtimes(tgt.abs, dl.ModTime, dl.ModTime)
+	}
+	ok, err = m.complete(ctx, f, tgt.rel, written, game.Title)
+	if err != nil || !ok {
+		if !ok {
+			_ = os.Remove(tgt.abs)
+		}
+		return err
+	}
+	m.log.Info("cloud save downloaded", "game", game.Title, "file", name, "size", written)
 	return nil
 }
 

@@ -109,7 +109,8 @@ func (p Paths) pruneEmpty(dir string) {
 	}
 }
 
-// RelDir returns the directory (relative to the game folder) for a file.
+// RelDir returns the directory (relative to the game folder) for an installer
+// or extra; cloud saves have SaveRelDir.
 func RelDir(kind, os, dlcFolder string) string {
 	sub := os
 	if kind == "extra" {
