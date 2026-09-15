@@ -741,6 +741,11 @@ func (s *Syncer) syncGame(ctx context.Context, id int64, owned gog.OwnedSet, set
 	}
 	suspect := s.checkBuilds(ctx, *game, settings)
 	planned := Plan(*game, p, owned, settings)
+	existing, err := s.db.ListFilesByGame(ctx, id)
+	if err != nil {
+		return err
+	}
+	keepLanguagesApart(*game, planned, existing)
 	verify := s.verifier(*game, suspect, rolling)
 	var keep []int64
 	if settings.ForGame(*game).IncludeSaves {

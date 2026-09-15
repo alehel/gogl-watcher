@@ -190,3 +190,68 @@ func TestSanitizeFolder(t *testing.T) {
 		}
 	}
 }
+
+// A language chosen after another was downloaded must not be planned into the
+// flat folder the other language's files still occupy: localized installers
+// often share their file names, and the copies kept from before would be
+// written over. Languages chosen together are kept apart by the plan itself.
+func TestKeepLanguagesApart(t *testing.T) {
+	game := db.Game{ID: 1, Folder: "Game"}
+	installer := func(product int64, os, lang, local, prev string) db.File {
+		return db.File{ProductID: product, Kind: db.KindInstaller, OS: os, Language: lang, LocalPath: local, PreviousPath: prev}
+	}
+	planned := func(relDir string) []PlannedProduct {
+		return []PlannedProduct{{Product: db.Product{ID: 1}, Files: []db.File{
+			{ProductID: 1, Kind: db.KindInstaller, OS: "windows", Language: "de", GogID: "de0", RelDir: relDir},
+			{ProductID: 1, Kind: db.KindInstaller, OS: "windows", Language: "de", GogID: "de1", RelDir: relDir},
+		}}}
+	}
+	cases := []struct {
+		name     string
+		existing []db.File
+		want     string
+	}{
+		{"nothing there yet", nil, "windows"},
+		{"another language kept in the flat folder", []db.File{installer(1, "windows", "en", "Game/windows/setup.exe", "")}, "windows/de"},
+		{"another language waiting there to be replaced", []db.File{installer(1, "windows", "en", "Game/windows/en/setup.exe", "Game/windows/setup.exe")}, "windows/de"},
+		{"another language in its own subfolder", []db.File{installer(1, "windows", "en", "Game/windows/en/setup.exe", "")}, "windows"},
+		{"the same language in the flat folder", []db.File{installer(1, "windows", "de", "Game/windows/setup-2.bin", "")}, "windows"},
+		{"a part of this installer already in the subfolder", []db.File{installer(1, "windows", "de", "Game/windows/de/setup-1.bin", "")}, "windows/de"},
+		{"another platform", []db.File{installer(1, "linux", "en", "Game/linux/setup.sh", "")}, "windows"},
+		{"another product", []db.File{installer(2, "windows", "en", "Game/windows/setup.exe", "")}, "windows"},
+		{"a row not downloaded", []db.File{installer(1, "windows", "en", "", "")}, "windows"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := planned("windows")
+			keepLanguagesApart(game, p, c.existing)
+			for _, f := range p[0].Files {
+				if f.RelDir != c.want {
+					t.Errorf("%s planned into %q, want %q", f.GogID, f.RelDir, c.want)
+				}
+			}
+		})
+	}
+	// Languages chosen together are in subfolders already and stay there.
+	p := planned("windows/de")
+	keepLanguagesApart(game, p, []db.File{installer(1, "windows", "en", "Game/windows/setup.exe", "")})
+	if got := p[0].Files[0].RelDir; got != "windows/de" {
+		t.Errorf("a subfolder of its own was changed to %q", got)
+	}
+	// A DLC's installers live in the DLC's folder, with the same rule.
+	dlc := []PlannedProduct{{Product: db.Product{ID: 2, Folder: "Expansion", IsDLC: true}, Files: []db.File{
+		{ProductID: 2, Kind: db.KindInstaller, OS: "windows", Language: "de", GogID: "x", RelDir: "dlc/Expansion/windows"},
+	}}}
+	keepLanguagesApart(game, dlc, []db.File{installer(2, "windows", "en", "Game/dlc/Expansion/windows/setup.exe", "")})
+	if got := dlc[0].Files[0].RelDir; got != "dlc/Expansion/windows/de" {
+		t.Errorf("DLC installer planned into %q, want its language subfolder", got)
+	}
+	// Extras carry no language and are left alone.
+	extras := []PlannedProduct{{Product: db.Product{ID: 1}, Files: []db.File{
+		{ProductID: 1, Kind: db.KindExtra, GogID: "e", RelDir: "extras"},
+	}}}
+	keepLanguagesApart(game, extras, []db.File{installer(1, "windows", "en", "Game/windows/setup.exe", "")})
+	if got := extras[0].Files[0].RelDir; got != "extras" {
+		t.Errorf("extra moved to %q", got)
+	}
+}

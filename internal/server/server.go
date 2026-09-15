@@ -82,24 +82,39 @@ func sameSiteOnly(next http.Handler) http.Handler {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
 		default:
-			if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
-				if site == "cross-site" {
-					writeError(w, http.StatusForbidden, "cross-site requests are not allowed")
-					return
-				}
-			}
-			if origin := r.Header.Get("Origin"); origin != "" && origin != "null" {
-				// Older browsers: fall back to comparing the origin with the host the
-				// request was addressed to (also as seen by a reverse proxy).
-				u, err := url.Parse(origin)
-				if err != nil || (!strings.EqualFold(u.Host, r.Host) && !strings.EqualFold(u.Host, r.Header.Get("X-Forwarded-Host"))) {
-					writeError(w, http.StatusForbidden, "cross-site requests are not allowed")
-					return
-				}
+			if !sameSite(r) {
+				writeError(w, http.StatusForbidden, "cross-site requests are not allowed")
+				return
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// sameSite reports whether a state-changing request can have come from the
+// UI's own origin. The browser's Sec-Fetch-Site header settles it where it is
+// sent: "same-origin" vouches for the request whatever host a reverse proxy in
+// front rewrote it to, "cross-site" condemns it. Without it (older browsers,
+// or a same-site request from another host) the Origin is held against the
+// host the request was addressed to, as the server or the proxy saw it. An
+// opaque origin ("null": a sandboxed frame, a data: page) is nobody's and is
+// refused like a foreign one.
+func sameSite(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-origin":
+		return true
+	case "cross-site":
+		return false
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true // not a browser, or one that sends no Origin on same-origin writes
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host) || strings.EqualFold(u.Host, r.Header.Get("X-Forwarded-Host"))
 }
 
 // ---- helpers ----
@@ -857,7 +872,7 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 		}
 		act = append(act, a)
 	}
-	pending, err := s.DB.ListFilesByStatus(ctx, db.StatusPending, true)
+	pending, err := s.DB.ListQueuedFiles(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -6,7 +6,11 @@
   from your settings (base game installers, platforms, languages with optional fallback, DLC,
   extras) and reconciles them with the database: new files become *pending*, files that
   really changed become *pending* again (the old file is deleted after the new one succeeds),
-  files that are no longer offered are marked *inactive*.
+  files that are no longer offered are marked *inactive*. Installers of different languages
+  often share their file names, so when several languages are chosen, or a language is chosen
+  after another one's installers were downloaded, each language gets its own folder
+  (`<Game>/<os>/<language>/`); a download never writes over a file that belongs to another
+  tracked one.
 - **Deciding that a file changed** (`internal/library/sync.go`): GOG publishes no build
   identity for offline installers, so three signals are combined, cheapest first. The
   installer's version string and manifest size come with the manifest and cost nothing, but
